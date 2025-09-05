@@ -81,9 +81,3 @@ You should see the **RegisTree** window with tabs for Students, Classes, Attenda
 3. Commit changes (`git commit -m "Add feature"`)
 4. Push to branch (`git push origin feature-name`)
 5. Open a Pull Request 🎉
-
----
-
-## 📜 License
-This project is under the **MIT License**.  
-You are free to use, modify, and distribute it as long as you include the license.
