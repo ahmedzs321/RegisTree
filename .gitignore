@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+
+# Editors
+.vscode/
+.idea/
+
+# Build artifacts (PyInstaller)
+build/
+dist/
+*.spec
+
+# Local data
+registree.db
+exports/
