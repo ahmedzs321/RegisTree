@@ -1,83 +1,169 @@
 # 🌳 RegisTree
 
-**RegisTree** is an offline desktop application (built with Python, PySide6, and SQLite) designed for schools to manage students, classes, and attendance.  
-The long-term vision is to provide both an **offline executable** for small schools and a **cloud-based version** for multi-user access.
+**RegisTree** is an offline, password-protected desktop application (Python + PySide6 + SQLite) for small schools and independent programs to manage:
+
+- Students  
+- Classes  
+- Enrollments  
+- Daily class attendance  
+- Data exports and backups  
+
+Long-term, RegisTree is intended to have both:
+
+- A **local executable** for offline schools  
+- A **cloud-backed version** for multi-device, multi-teacher access  
 
 ---
 
-## 🚀 Features (Phase 1 MVP)
-- Student registration & management
-- Class creation & enrollment
-- Attendance tracking (daily, per class)
-- Data export to CSV/JSON/PDF
+## ✨ Current Features
+
+### Core Data
+
+- Student registration & management  
+  - Name, DOB, grade, status (Active/Inactive/Graduated)  
+  - Guardian name & phone  
+  - Contact email  
+- Class management  
+  - Name, subject, teacher, term, room  
+- Enrollment system  
+  - Assign students to classes  
+  - Track enrollment start/end dates  
+
+### Attendance
+
+- Per-class, per-day attendance view  
+- Status per student (e.g. Present/Absent/…)  
+- Data stored in SQLite for reporting later  
+
+### Dashboard
+
+- Total students / active students  
+- Total classes  
+- Today’s attendance count  
+- Breakdown by status for today (Present/Absent/etc.)  
+- Auto-refresh when you switch to the Dashboard tab  
+
+### Security
+
+- Admin account stored in the database (`admin_users` table)  
+- First run: prompt to **set admin password**  
+- Later runs: **login dialog** before app opens  
+- Passwords hashed with **bcrypt** (no plain-text storage)  
+
+### Backup & Restore
+
+- **Backup Database…**  
+  - One-click copy of `registree.db` to a chosen location  
+- **Restore Database…**  
+  - Import an existing `.db` file, overwriting the local one  
+  - “Restart now?” prompt that fully restarts the app  
+- All data (including the admin password) travels with the DB file, so you can move RegisTree between devices.  
+
+### Exports
+
+- CSV exports:
+  - Students (`students.csv`)
+  - Classes (`classes.csv`)
+  - Enrollments (`enrollments.csv`)
+  - Attendance for a chosen date (`attendance_YYYY-MM-DD.csv`)
+- JSON:
+  - `students.json` snapshot of all students
+- PDF:
+  - Daily summary PDF for a date (total students, classes, attendance counts, status breakdown)
+- Daily bundle:
+  - For a selected date, generates a folder `exports/YYYY-MM-DD/` containing  
+    - `students.json`  
+    - `attendance_YYYY-MM-DD.csv`  
+    - `summary_YYYY-MM-DD.pdf`  
 
 ---
 
-## 🌟 Planned Features (Phase 2)
-- User authentication (Admin/Teacher roles)
-- Audit logs for data changes
-- Automated backups & restore
-- Windows executable packaging for distribution
+## 🧭 Roadmap (Summary)
+
+RegisTree’s upcoming development is focused on expanding functionality, improving usability, and preparing for long-term scalability. Planned features include:
+
+- **Settings Menu** – Global configuration for school info, academic year, custom attendance statuses, export defaults, and auto-save behavior.  
+- **Student Lifecycle Tools** – Graduation workflows and automatic grade-level promotion each academic year.  
+- **Student Profiles** – A detailed profile window showing photos, attendance history, class list, guardian info, and notes.  
+- **Class View Enhancements** – Enrollment counts, attendance summaries, roster exports, and quick-action views for each class.  
+- **Attendance Reports** – Student/class reports, monthly summaries, and absence analytics in CSV/PDF form.  
+- **Undo/Redo System** – Ability to revert recent changes such as deletions, edits, and enrollments.  
+- **Calendar View** – A visual attendance calendar with color-coded days and per-day breakdowns.  
+- **UI/UX Improvements** – Dark mode, better spacing and fonts, modern dialogs, icons, and color-coded attendance statuses.  
 
 ---
 
-## 📦 Getting Started
+## 🛠 Tech Stack
+
+- **Python** 3.12+  
+- **PySide6** — desktop UI (Qt)  
+- **SQLite** — local database  
+- **SQLAlchemy** — ORM  
+- **bcrypt** — password hashing  
+- **ReportLab** — PDF generation  
+
+---
+
+## 🚀 Getting Started (Developers / Collaborators)
 
 ### 1. Clone the repository
-    git clone https://github.com/YOURUSERNAME/RegisTree.git
-    cd RegisTree
 
-### 2. Create a virtual environment
-**Windows (PowerShell):**
-    python -m venv venv
-    .\venv\Scripts\Activate
+```bash
+git clone https://github.com/YOURUSERNAME/RegisTree.git
+cd RegisTree
+```
 
-**macOS/Linux:**
-    python3 -m venv venv
-    source venv/bin/activate
+### 2. Create and activate a virtual environment
+
+Windows (PowerShell):
+```PowerShell
+python -m venv venv
+.\venv\Scripts\Activate
+```
+
+macOS / Linux:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+````
 
 ### 3. Install dependencies
-    pip install -r requirements.txt
+```bash
+pip install -r requirements.txt
+```
 
 ### 4. Run the app
-    python app.py
+```bash
+python app.py
+```
 
-You should see the **RegisTree** window with tabs for Students, Classes, Attendance, and Exports.
+On first run, you will be prompted to:
 
----
+	1. Set an admin password.
 
-## 📊 Project Roadmap
+	2. After that, the main window opens with tabs for Dashboard, Students, Classes, Attendance, and Exports.
 
-### Phase 1 — Offline MVP
-1. Add Student model (SQLAlchemy)
-2. Build StudentsView table (UI)
-3. Add Class model
-4. Create Enrollment model (student-class link)
-5. Add Attendance model and AttendanceView
-6. Export data (CSV/JSON/PDF)
-
-### Phase 2 — Extras & Improvements
-7. User authentication (Admin/Teacher roles)
-8. Audit log for data changes
-9. Backup & restore system
-10. Package RegisTree as Windows executable
+On later runs, you’ll see an Admin Login dialog before the main window opens.
 
 ---
 
-## 🔧 Tech Stack
-- Python 3.12+
-- PySide6 — desktop UI
-- SQLAlchemy — ORM & database
-- SQLite — local database
-- ReportLab — PDF generation
-- bcrypt — password hashing
-- PyInstaller — executable packaging (later)
-
----
-
-## 👥 Contributing
-1. Fork the repo
-2. Create a feature branch (`git checkout -b feature-name`)
-3. Commit changes (`git commit -m "Add feature"`)
-4. Push to branch (`git push origin feature-name`)
-5. Open a Pull Request 🎉
+## 🧑‍💻 Project Structure (high-level)
+RegisTree/
+  app.py                # Entry point (login + main window)
+  data/
+    db.py               # SQLAlchemy engine + SessionLocal + init_db()
+    models.py           # Student, Class, Enrollment, Attendance, AdminUser
+    security.py         # bcrypt hashing + verification
+  ui/
+    dashboard_view.py   # Dashboard tab
+    students_view.py    # Students tab (CRUD, search/filter)
+    classes_view.py     # Classes tab (CRUD, search/filter, enrollments)
+    attendance_view.py  # Attendance tab
+    exports_view.py     # Exports + backup/restore + bundles
+    auth_dialogs.py     # SetupAdminDialog, LoginDialog, ChangePasswordDialog
+  registree.db          # Local SQLite database (ignored by git)
+  exports/              # Generated CSV/JSON/PDF files (ignored by git)
+  requirements.txt
+  README.md
+  .gitignore
+  
