@@ -1,4 +1,4 @@
-# Python
+# Python bytecode / cache
 __pycache__/
 *.pyc
 *.pyo
@@ -6,16 +6,22 @@ __pycache__/
 
 # Virtual environments
 venv/
+.env/
+.venv/
 
-# Editors
+# Editors / IDEs
 .vscode/
 .idea/
 
-# Build artifacts (PyInstaller)
+# Build artifacts (PyInstaller, etc.)
 build/
 dist/
 *.spec
 
-# Local data
+# Local data (DO NOT COMMIT)
 registree.db
 exports/
+
+# OS-specific junk
+.DS_Store
+Thumbs.db

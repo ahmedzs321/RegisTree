@@ -1,5 +1,4 @@
 PySide6
 SQLAlchemy>=2.0
-jinja2
-bcrypt
 reportlab
+bcrypt
