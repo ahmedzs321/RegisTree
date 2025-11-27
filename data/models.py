@@ -1,5 +1,15 @@
 from sqlalchemy.orm import declarative_base, relationship
-from sqlalchemy import Column, Integer, String, Date, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Date,
+    DateTime,
+    ForeignKey,
+    UniqueConstraint,
+    Boolean,
+    Text,
+)
 from datetime import date, datetime
 
 Base = declarative_base()
@@ -152,3 +162,30 @@ class AdminUser(Base):
 
     def __repr__(self) -> str:
         return f"<AdminUser id={self.id} username={self.username}>"
+
+class Settings(Base):
+    __tablename__ = "settings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Displayed in UI (and potentially in future reports)
+    school_name = Column(String(200), nullable=True)
+    academic_year = Column(String(50), nullable=True)
+
+    # JSON-encoded list of attendance statuses (e.g. ["Present", "Absent", "Tardy", "Excused"])
+    attendance_statuses_json = Column(
+        Text,
+        nullable=False,
+        default='["Present", "Absent", "Tardy", "Excused"]',
+    )
+
+    # Base folder for exports (can be overridden by manual file dialogs)
+    export_base_dir = Column(String(255), nullable=True)
+    attendance_auto_save = Column(Boolean, nullable=False, default=False)
+    
+    # Grade range for promotion logic (subset of a PreK–12 scale)
+    starting_grade = Column(String(20), nullable=True)   # e.g. "K", "1st"
+    graduating_grade = Column(String(20), nullable=True) # e.g. "5th", "12th"
+
+    def __repr__(self) -> str:
+        return f"<Settings id={self.id} school_name={self.school_name!r}>"

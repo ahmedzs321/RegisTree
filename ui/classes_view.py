@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from PySide6.QtCore import QDate
 from datetime import date
-from data.models import Class, Student, Enrollment
+from data.models import Class, Student, Enrollment, Attendance
 from sqlalchemy import or_
 
 
@@ -113,7 +113,7 @@ class ClassesView(QWidget):
                 )
             )
 
-        classes = query.order_by(Class.name).all()
+        classes = query.order_by(Class.term, Class.id).all()
 
         # Update term filter dropdown with distinct terms
         if hasattr(self, "term_filter"):
@@ -209,7 +209,11 @@ class ClassesView(QWidget):
         if clazz is None:
             QMessageBox.warning(self, "Delete Class", "Class not found in database.")
             return
-
+        #Delete attendance rows for this class
+        self.session.query(Attendance).filter(
+            Attendance.class_id == class_id
+        ).delete(synchronize_session=False)
+        #Delete class
         self.session.delete(clazz)
         self.session.commit()
 
@@ -386,19 +390,35 @@ class ManageEnrollmentsDialog(QDialog):
         main_layout.addWidget(QLabel("Enrolled students:"))
         main_layout.addWidget(self.table)
 
-        # Row: dropdown to add a student
-        add_layout = QHBoxLayout()
-        add_layout.addWidget(QLabel("Add student:"))
+        # --- Search + list of available students (Active, not enrolled) ---
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("Search active students:"))
 
-        self.student_combo = QComboBox()
-        add_layout.addWidget(self.student_combo)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Name or ID…")
+        self.search_edit.textChanged.connect(self.load_available_students)
+        search_layout.addWidget(self.search_edit)
 
-        self.add_student_button = QPushButton("Enroll")
+        main_layout.addLayout(search_layout)
+
+        self.available_table = QTableWidget()
+        self.available_table.setColumnCount(3)
+        self.available_table.setHorizontalHeaderLabels(
+            ["ID", "First Name", "Last Name"]
+        )
+        self.available_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.available_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.available_table.setEditTriggers(QTableWidget.NoEditTriggers)
+
+        main_layout.addWidget(QLabel("Available students (Active, not enrolled):"))
+        main_layout.addWidget(self.available_table)
+
+        enroll_layout = QHBoxLayout()
+        self.add_student_button = QPushButton("Enroll Selected")
         self.add_student_button.clicked.connect(self.add_enrollment)
-        add_layout.addWidget(self.add_student_button)
-
-        add_layout.addStretch()
-        main_layout.addLayout(add_layout)
+        enroll_layout.addWidget(self.add_student_button)
+        enroll_layout.addStretch()
+        main_layout.addLayout(enroll_layout)
 
         # Row: date editors to modify start/end dates for the selected student
         dates_layout = QHBoxLayout()
@@ -472,12 +492,19 @@ class ManageEnrollmentsDialog(QDialog):
         self.table.resizeColumnsToContents()
 
     # --------------------------------------------------------------
-    # Load students that are NOT yet enrolled in this class
-    # into the combo box
+    # Load available students (Active, not enrolled) into the table
     # --------------------------------------------------------------
     def load_available_students(self):
-        self.student_combo.clear()
+        """
+        Populate the 'available students' table with Active students
+        who are NOT already enrolled in this class, applying the search filter.
+        """
+        if not hasattr(self, "available_table"):
+            return
 
+        self.available_table.setRowCount(0)
+
+        # Already enrolled in this class
         enrolled_ids = {
             e.student_id
             for e in self.session.query(Enrollment)
@@ -485,42 +512,79 @@ class ManageEnrollmentsDialog(QDialog):
             .all()
         }
 
+        # Base query: Active students not in this class
+        query = self.session.query(Student).filter(Student.status == "Active")
+        if enrolled_ids:
+            query = query.filter(~Student.id.in_(enrolled_ids))
+
+        # Optional search filter
+        search_text = ""
+        if hasattr(self, "search_edit") and self.search_edit is not None:
+            search_text = self.search_edit.text().strip()
+
+        if search_text:
+            try:
+                search_id = int(search_text)
+            except ValueError:
+                search_id = None
+
+            like_pattern = f"%{search_text}%"
+            filters = [
+                Student.first_name.ilike(like_pattern),
+                Student.last_name.ilike(like_pattern),
+            ]
+            if search_id is not None:
+                filters.append(Student.id == search_id)
+
+            query = query.filter(or_(*filters))
+
+        # Sort by last name, first name, id
         available_students = (
-            self.session.query(Student)
-            .filter(~Student.id.in_(enrolled_ids) if enrolled_ids else True)
-            .order_by(Student.last_name, Student.first_name)
-            .all()
+            query.order_by(Student.last_name, Student.first_name, Student.id).all()
         )
 
-        self.combo_id_map = []
-
-        for s in available_students:
-            label = f"{s.last_name}, {s.first_name} (ID {s.id})"
-            self.student_combo.addItem(label)
-            self.combo_id_map.append(s.id)
-
         if not available_students:
-            self.student_combo.addItem("(No available students)")
-            self.student_combo.setEnabled(False)
             self.add_student_button.setEnabled(False)
-        else:
-            self.student_combo.setEnabled(True)
-            self.add_student_button.setEnabled(True)
+            return
+
+        self.add_student_button.setEnabled(True)
+        self.available_table.setRowCount(len(available_students))
+
+        for row, s in enumerate(available_students):
+            self.available_table.setItem(row, 0, QTableWidgetItem(str(s.id)))
+            self.available_table.setItem(row, 1, QTableWidgetItem(s.first_name or ""))
+            self.available_table.setItem(row, 2, QTableWidgetItem(s.last_name or ""))
+
+        self.available_table.resizeColumnsToContents()
 
     # --------------------------------------------------------------
-    # Enroll selected student from combo into this class
+    # Enroll selected student from the available table
     # --------------------------------------------------------------
     def add_enrollment(self):
-        if not hasattr(self, "combo_id_map") or not self.combo_id_map:
-            QMessageBox.information(self, "Enroll", "No students available to enroll.")
+        """
+        Enroll the selected student from the 'available students' table
+        into this class.
+        """
+        if not hasattr(self, "available_table"):
             return
 
-        index = self.student_combo.currentIndex()
-        if index < 0 or index >= len(self.combo_id_map):
-            QMessageBox.warning(self, "Enroll", "Please select a valid student.")
+        row = self.available_table.currentRow()
+        if row < 0:
+            QMessageBox.information(
+                self, "Enroll", "Please select a student to enroll."
+            )
             return
 
-        student_id = self.combo_id_map[index]
+        id_item = self.available_table.item(row, 0)
+        if id_item is None:
+            QMessageBox.warning(self, "Enroll", "Could not determine student ID.")
+            return
+
+        try:
+            student_id = int(id_item.text())
+        except ValueError:
+            QMessageBox.warning(self, "Enroll", "Invalid student ID.")
+            return
 
         existing = (
             self.session.query(Enrollment)
@@ -536,11 +600,24 @@ class ManageEnrollmentsDialog(QDialog):
             )
             return
 
+        # Use the current start/end date controls for the new enrollment
+        start_qdate = self.start_date_edit.date()
+        start_date_val = date(
+            start_qdate.year(), start_qdate.month(), start_qdate.day()
+        )
+
+        end_date_val = None
+        end_qdate = self.end_date_edit.date()
+        if end_qdate.isValid():
+            end_date_val = date(
+                end_qdate.year(), end_qdate.month(), end_qdate.day()
+            )
+
         e = Enrollment(
             student_id=student_id,
             class_id=self.clazz.id,
-            start_date=date.today(),
-            end_date=None,
+            start_date=start_date_val,
+            end_date=end_date_val,
         )
         self.session.add(e)
         self.session.commit()

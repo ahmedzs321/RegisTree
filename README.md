@@ -82,8 +82,8 @@ Long-term, RegisTree is intended to have both:
 
 RegisTree’s upcoming development is focused on expanding functionality, improving usability, and preparing for long-term scalability. Planned features include:
 
-- **Settings Menu** – Global configuration for school info, academic year, custom attendance statuses, export defaults, and auto-save behavior.  
-- **Student Lifecycle Tools** – Graduation workflows and automatic grade-level promotion each academic year.  
+- **Settings Menu** – Global configuration for school info, academic year, custom attendance statuses, export defaults, and auto-save behavior.  [COMPLETED]
+- **Student Lifecycle Tools** – Graduation workflows and automatic grade-level promotion each academic year.  [COMPLETED]
 - **Student Profiles** – A detailed profile window showing photos, attendance history, class list, guardian info, and notes.  
 - **Class View Enhancements** – Enrollment counts, attendance summaries, roster exports, and quick-action views for each class.  
 - **Attendance Reports** – Student/class reports, monthly summaries, and absence analytics in CSV/PDF form.  
@@ -149,21 +149,27 @@ On later runs, you’ll see an Admin Login dialog before the main window opens.
 
 ## 🧑‍💻 Project Structure (high-level)
 RegisTree/
-  app.py                # Entry point (login + main window)
+  app.py                  # Application entry point (login + main window + tab wiring)
+  requirements.txt        # Python dependencies
+  README.md               # Project overview & setup instructions
+  .gitignore              # Files/directories excluded from version control
+  registree.db            # Local SQLite database (auto-created, ignored by git)
   data/
-    db.py               # SQLAlchemy engine + SessionLocal + init_db()
-    models.py           # Student, Class, Enrollment, Attendance, AdminUser
-    security.py         # bcrypt hashing + verification
+    __init__.py
+    db.py                 # SQLAlchemy engine, SessionLocal, init_db()
+    models.py             # ORM models: Student, Class, Enrollment, Attendance, AdminUser, Settings
+    security.py           # Password hashing & verification (bcrypt)
   ui/
-    dashboard_view.py   # Dashboard tab
-    students_view.py    # Students tab (CRUD, search/filter)
-    classes_view.py     # Classes tab (CRUD, search/filter, enrollments)
-    attendance_view.py  # Attendance tab
-    exports_view.py     # Exports + backup/restore + bundles
-    auth_dialogs.py     # SetupAdminDialog, LoginDialog, ChangePasswordDialog
-  registree.db          # Local SQLite database (ignored by git)
-  exports/              # Generated CSV/JSON/PDF files (ignored by git)
-  requirements.txt
-  README.md
-  .gitignore
-  
+    __init__.py
+    dashboard_view.py     # Dashboard tab (key metrics + today’s attendance)
+    students_view.py      # Students tab (CRUD, search/filter, promotion logic)
+    classes_view.py       # Classes tab (CRUD, term filter, manage enrollments)
+    attendance_view.py    # Attendance tab (roster loading, marking, auto-save)
+    exports_view.py       # Exports tab (CSV/JSON/PDF export, backup/restore)
+    settings_view.py      # Settings tab (school info, statuses, grade range, promote-all)
+    auth_dialogs.py       # SetupAdminDialog & LoginDialog (first-run + login UI)
+
+  exports/                # Generated export files (CSV/JSON/PDF) — (ignored by git)
+  venv/                   # Local virtual environment (ignored by git)
+  build/                  # PyInstaller build artifacts (ignored by git)
+  dist/                   # PyInstaller distribution folder (ignored by git)

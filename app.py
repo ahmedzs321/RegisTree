@@ -1,12 +1,13 @@
 # RegisTree main window with security + tabs
-
 import sys
 import os
+import json
+from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, QDialog
 
 from data.db import init_db, SessionLocal
-from data.models import AdminUser
+from data.models import AdminUser, Settings
 from data.security import hash_password, verify_password
 
 from ui.students_view import StudentsView
@@ -15,25 +16,31 @@ from ui.attendance_view import AttendanceView
 from ui.exports_view import ExportsView
 from ui.dashboard_view import DashboardView
 from ui.auth_dialogs import SetupAdminDialog, LoginDialog
+from ui.settings_view import SettingsView
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, session):
+    def __init__(self, session, settings):
         super().__init__()
         self.setWindowTitle("RegisTree")
         self.session = session
-
+        self.settings = settings
         self.tabs = QTabWidget()
 
-        # Dashboard as first tab
-        self.dashboard_view = DashboardView(self.session)
-        self.tabs.addTab(self.dashboard_view, "Dashboard")
+        # Tab instances
+        self.dashboard_view = DashboardView(self.session, self.settings)
+        self.students_view = StudentsView(self.session, self.settings)
+        self.classes_view = ClassesView(self.session)
+        self.attendance_view = AttendanceView(self.session, self.settings)
+        self.exports_view = ExportsView(self.session, self.settings)
+        self.settings_view = SettingsView(self.session, self.settings, self.students_view)
 
-        # Other tabs
-        self.tabs.addTab(StudentsView(self.session), "Students")
-        self.tabs.addTab(ClassesView(self.session), "Classes")
-        self.tabs.addTab(AttendanceView(self.session), "Attendance")
-        self.tabs.addTab(ExportsView(self.session), "Exports")
+        self.tabs.addTab(self.dashboard_view, "Dashboard")
+        self.tabs.addTab(self.students_view, "Students")
+        self.tabs.addTab(self.classes_view, "Classes")
+        self.tabs.addTab(self.attendance_view, "Attendance")
+        self.tabs.addTab(self.exports_view, "Exports")
+        self.tabs.addTab(self.settings_view, "Settings")
 
         # When user switches tabs, refresh dashboard if selected
         self.tabs.currentChanged.connect(self.handle_tab_changed)
@@ -41,9 +48,16 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tabs)
 
     def handle_tab_changed(self, index: int):
-        # If Dashboard tab (index 0) is selected, refresh stats
-        if index == 0 and self.dashboard_view is not None:
+        widget = self.tabs.widget(index)
+
+        if widget is self.dashboard_view:
             self.dashboard_view.refresh_stats()
+
+        if widget is self.attendance_view:
+            # Refresh class list every time we enter the Attendance tab
+            self.attendance_view.load_classes()
+            # Auto-load roster silently (no warnings)
+            self.attendance_view.load_roster(show_warnings=False)
 
     def closeEvent(self, event):
         # Close DB session cleanly on window close
@@ -96,8 +110,24 @@ def main():
             sys.exit(0)
     # ----- SECURITY END -----
 
+    # Load or create the global Settings row
+    settings = session.query(Settings).first()
+    if settings is None:
+        default_statuses = ["Present", "Absent", "Tardy", "Excused"]
+        settings = Settings(
+            school_name="",
+            academic_year="",
+            attendance_statuses_json=json.dumps(default_statuses),
+            export_base_dir=str(Path("exports").resolve()),
+            attendance_auto_save=False,
+            starting_grade="K",
+            graduating_grade="12th",
+        )
+        session.add(settings)
+        session.commit()
+
     # Launch main app window
-    win = MainWindow(session)
+    win = MainWindow(session, settings)
     win.resize(1100, 700)
     win.show()
     sys.exit(app.exec())

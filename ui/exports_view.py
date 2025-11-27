@@ -38,9 +38,10 @@ class ExportsView(QWidget):
     - Backup and restore the entire SQLite database file.
     """
 
-    def __init__(self, session):
+    def __init__(self, session, settings=None):
         super().__init__()
         self.session = session
+        self.settings = settings
 
         main_layout = QVBoxLayout()
 
@@ -119,14 +120,21 @@ class ExportsView(QWidget):
     # Helpers for paths
     # ------------------------------------------------------------------
     def _get_exports_dir(self) -> Path:
-        """Generic exports folder."""
-        out_dir = Path("exports")
-        out_dir.mkdir(exist_ok=True)
-        return out_dir
+        """Generic exports folder, possibly overridden by Settings.export_base_dir."""
+        if self.settings is not None and getattr(
+            self.settings, "export_base_dir", None
+        ):
+            base = Path(self.settings.export_base_dir)
+        else:
+            base = Path("exports")
+
+        base.mkdir(parents=True, exist_ok=True)
+        return base
 
     def _get_date_dir(self, att_date: date) -> Path:
-        """Folder for a specific date, e.g. exports/2025-11-25/."""
-        out_dir = Path("exports") / att_date.isoformat()
+        """Folder for a specific date, e.g. <base>/2025-11-25/."""
+        base = self._get_exports_dir()
+        out_dir = base / att_date.isoformat()
         out_dir.mkdir(parents=True, exist_ok=True)
         return out_dir
 
