@@ -3,8 +3,15 @@ import sys
 import os
 import json
 from pathlib import Path
+from PySide6.QtGui import QIcon
 
-from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, QDialog
+from PySide6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QTabWidget,
+    QDialog,
+    QMessageBox,
+)
 
 from data.db import init_db, SessionLocal
 from data.models import AdminUser, Settings
@@ -17,28 +24,101 @@ from ui.exports_view import ExportsView
 from ui.dashboard_view import DashboardView
 from ui.auth_dialogs import SetupAdminDialog, LoginDialog
 from ui.settings_view import SettingsView
+from ui.teachers_view import TeachersView
+from ui.undo_manager import UndoManager
+from ui.calendar_view import CalendarView
+
+
+# ----------------------------------------------------------
+# Theme support (Light / Dark)
+# ----------------------------------------------------------
+
+DARK_STYLESHEET = """
+QWidget {
+    background-color: #202124;
+    color: #f1f3f4;
+}
+QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QSpinBox, QDateEdit,
+QTableView, QTableWidget {
+    background-color: #303134;
+    color: #f1f3f4;
+    border: 1px solid #5f6368;
+}
+QHeaderView::section {
+    background-color: #303134;
+    color: #f1f3f4;
+}
+QPushButton {
+    background-color: #3c4043;
+    color: #f1f3f4;
+    border: 1px solid #5f6368;
+    padding: 4px 8px;
+}
+QPushButton:hover {
+    background-color: #4a4f54;
+}
+QGroupBox {
+    border: 1px solid #5f6368;
+    margin-top: 6px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0 4px;
+}
+"""
+
+
+def apply_theme(theme: str | None):
+    """
+    Apply the requested theme ("Light" or "Dark") to the whole application.
+    """
+    app = QApplication.instance()
+    if app is None:
+        return
+
+    theme = (theme or "Light").strip()
+    if theme.lower() == "dark":
+        app.setStyleSheet(DARK_STYLESHEET)
+    else:
+        # Reset to default Qt style
+        app.setStyleSheet("")
 
 
 class MainWindow(QMainWindow):
     def __init__(self, session, settings):
         super().__init__()
+        self.setWindowIcon(QIcon(str(Path(__file__).parent / "ui" / "assets" / "registree_icon.png")))
         self.setWindowTitle("RegisTree")
         self.session = session
         self.settings = settings
         self.tabs = QTabWidget()
 
+        # NEW: one global undo manager
+        self.undo_manager = UndoManager()
+
         # Tab instances
         self.dashboard_view = DashboardView(self.session, self.settings)
-        self.students_view = StudentsView(self.session, self.settings)
-        self.classes_view = ClassesView(self.session)
+        self.students_view = StudentsView(self.session, self.settings, self.undo_manager)
+        self.teachers_view = TeachersView(self.session, self.settings, self.undo_manager)
+        self.classes_view = ClassesView(self.session, self.undo_manager)
         self.attendance_view = AttendanceView(self.session, self.settings)
+        self.calendar_view = CalendarView(self.session, self.settings, self.attendance_view)
         self.exports_view = ExportsView(self.session, self.settings)
-        self.settings_view = SettingsView(self.session, self.settings, self.students_view)
+        # Pass apply_theme so SettingsView can switch theme live
+        self.settings_view = SettingsView(
+            self.session,
+            self.settings,
+            self.students_view,
+            apply_theme_func=apply_theme,
+        )
 
         self.tabs.addTab(self.dashboard_view, "Dashboard")
         self.tabs.addTab(self.students_view, "Students")
+        self.tabs.addTab(self.teachers_view, "Teachers")
         self.tabs.addTab(self.classes_view, "Classes")
         self.tabs.addTab(self.attendance_view, "Attendance")
+        self.tabs.addTab(self.calendar_view, "Calendar")
         self.tabs.addTab(self.exports_view, "Exports")
         self.tabs.addTab(self.settings_view, "Settings")
 
@@ -47,6 +127,23 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(self.tabs)
 
+        # --------------------------------------------------------------
+        # Edit → Undo / Redo menu
+        # --------------------------------------------------------------
+        menubar = self.menuBar()
+        edit_menu = menubar.addMenu("&Edit")
+
+        self.undo_action = edit_menu.addAction("Undo")
+        self.undo_action.setShortcut("Ctrl+Z")
+        self.undo_action.triggered.connect(self.handle_undo)
+
+        self.redo_action = edit_menu.addAction("Redo")
+        self.redo_action.setShortcut("Ctrl+Y")
+        self.redo_action.triggered.connect(self.handle_redo)
+
+    # ----------------------------------------------------------
+    # Tab change behaviour
+    # ----------------------------------------------------------
     def handle_tab_changed(self, index: int):
         widget = self.tabs.widget(index)
 
@@ -59,6 +156,20 @@ class MainWindow(QMainWindow):
             # Auto-load roster silently (no warnings)
             self.attendance_view.load_roster(show_warnings=False)
 
+    # ----------------------------------------------------------
+    # Undo / Redo handlers
+    # ----------------------------------------------------------
+    def handle_undo(self):
+        if not self.undo_manager.undo():
+            QMessageBox.information(self, "Undo", "Nothing to undo.")
+
+    def handle_redo(self):
+        if not self.undo_manager.redo():
+            QMessageBox.information(self, "Redo", "Nothing to redo.")
+
+    # ----------------------------------------------------------
+    # Cleanup
+    # ----------------------------------------------------------
     def closeEvent(self, event):
         # Close DB session cleanly on window close
         self.session.close()
@@ -67,6 +178,10 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+
+    # Set global application icon
+    icon_path = Path(__file__).parent / "ui" / "assets" / "registree_icon.png"
+    app.setWindowIcon(QIcon(str(icon_path)))
 
     # Initialize DB schema (creates tables if needed)
     init_db()
@@ -113,7 +228,7 @@ def main():
     # Load or create the global Settings row
     settings = session.query(Settings).first()
     if settings is None:
-        default_statuses = ["Present", "Absent", "Tardy", "Excused"]
+        default_statuses = ["Present", "Absent", "Tardy", "Excused", "No School"]
         settings = Settings(
             school_name="",
             academic_year="",
@@ -125,6 +240,9 @@ def main():
         )
         session.add(settings)
         session.commit()
+
+    # Apply theme from settings at startup
+    apply_theme(getattr(settings, "theme", "Light"))
 
     # Launch main app window
     win = MainWindow(session, settings)

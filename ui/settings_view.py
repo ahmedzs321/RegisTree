@@ -14,8 +14,11 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QPlainTextEdit,
+    QDialog,
+    QTableWidget,
+    QTableWidgetItem,
 )
-from data.models import AdminUser
+from data.models import AdminUser, AuditLog
 from data.security import verify_password
 from ui.auth_dialogs import LoginDialog
 
@@ -36,6 +39,7 @@ GRADE_SCALE = [
     "12th",
 ]
 
+
 class SettingsView(QWidget):
     """
     Global application settings for RegisTree.
@@ -43,13 +47,14 @@ class SettingsView(QWidget):
     Backed by a single Settings row in the database.
     """
 
-    DEFAULT_STATUSES = ["Present", "Absent", "Tardy", "Excused"]
+    DEFAULT_STATUSES = ["Present", "Absent", "Tardy", "Excused", "No School"]
 
-    def __init__(self, session, settings, students_view=None):
+    def __init__(self, session, settings, students_view=None, apply_theme_func=None):
         super().__init__()
         self.session = session
         self.settings = settings
         self.students_view = students_view
+        self.apply_theme_func = apply_theme_func  # <--- NEW
 
         main_layout = QVBoxLayout()
 
@@ -63,6 +68,11 @@ class SettingsView(QWidget):
         self.academic_year_edit = QLineEdit()
         self.academic_year_edit.setPlaceholderText("e.g. 2025-2026")
         form.addRow("Academic year:", self.academic_year_edit)
+
+        # Theme selector
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["Light", "Dark"])
+        form.addRow("Theme:", self.theme_combo)
 
         # Attendance statuses (one per line)
         self.statuses_edit = QPlainTextEdit()
@@ -95,9 +105,28 @@ class SettingsView(QWidget):
         form.addRow("Starting grade:", self.starting_grade_combo)
         form.addRow("Graduating grade:", self.graduating_grade_combo)
 
-        # Attendance auto-save toggle (stored for future behavior)
+        # Attendance auto-save toggle
         self.auto_save_checkbox = QCheckBox("Enable auto-save for attendance")
         form.addRow("Attendance auto-save:", self.auto_save_checkbox)
+
+        # School days selection
+        self.school_days_checkboxes = {}
+        days_row = QHBoxLayout()
+        day_names = [
+            ("Mon", "Mon"),
+            ("Tue", "Tue"),
+            ("Wed", "Wed"),
+            ("Thu", "Thu"),
+            ("Fri", "Fri"),
+            ("Sat", "Sat"),
+            ("Sun", "Sun"),
+        ]
+        for key, label in day_names:
+            cb = QCheckBox(label)
+            self.school_days_checkboxes[key] = cb
+            days_row.addWidget(cb)
+        days_row.addStretch()
+        form.addRow("School days:", days_row)
 
         main_layout.addLayout(form)
 
@@ -122,6 +151,27 @@ class SettingsView(QWidget):
 
         promotion_group.setLayout(promotion_layout)
         main_layout.addWidget(promotion_group)
+
+        # --- Audit Logs viewer (password-protected) ---
+        audit_group = QGroupBox("Audit Logs")
+        audit_layout = QVBoxLayout()
+
+        audit_desc = QLabel(
+            "View audit log entries for changes to students, teachers, classes,\n"
+            "attendance records, and calendar events. Admin password required."
+        )
+        audit_desc.setWordWrap(True)
+        audit_layout.addWidget(audit_desc)
+
+        audit_button_layout = QHBoxLayout()
+        self.view_audit_button = QPushButton("View Audit Logs…")
+        self.view_audit_button.clicked.connect(self.on_view_audit_logs_clicked)
+        audit_button_layout.addWidget(self.view_audit_button)
+        audit_button_layout.addStretch()
+        audit_layout.addLayout(audit_button_layout)
+
+        audit_group.setLayout(audit_layout)
+        main_layout.addWidget(audit_group)
 
         # Buttons
         button_layout = QHBoxLayout()
@@ -189,6 +239,26 @@ class SettingsView(QWidget):
         # Auto-save flag
         self.auto_save_checkbox.setChecked(bool(self.settings.attendance_auto_save))
 
+        # Theme
+        theme = getattr(self.settings, "theme", None) or "Light"
+        if theme not in ("Light", "Dark"):
+            theme = "Light"
+        self.theme_combo.setCurrentText(theme)
+
+        # School days: default to Mon–Fri if not set
+        try:
+            raw_days = self.settings.school_days_json or ""
+            if raw_days:
+                days = json.loads(raw_days)
+            else:
+                days = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+        except Exception:
+            days = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+
+        days_set = set(days)
+        for key, cb in self.school_days_checkboxes.items():
+            cb.setChecked(key in days_set)
+
     def reset_statuses(self):
         self.statuses_edit.setPlainText("\n".join(self.DEFAULT_STATUSES))
 
@@ -205,15 +275,24 @@ class SettingsView(QWidget):
     def save_settings(self):
         # Parse statuses
         raw_lines = self.statuses_edit.toPlainText().splitlines()
-        statuses = [line.strip() for line in raw_lines if line.strip()]
+        user_statuses = [line.strip() for line in raw_lines if line.strip()]
 
-        if not statuses:
+        if not user_statuses:
             QMessageBox.warning(
                 self,
                 "Settings",
                 "Please specify at least one attendance status.",
             )
             return
+
+        # Core statuses that must always exist and cannot be removed/renamed
+        CORE_STATUSES = ["Present", "Absent", "Tardy", "Excused", "No School"]
+
+        # Extras = any statuses that are not core
+        extras = [s for s in user_statuses if s not in CORE_STATUSES]
+
+        # Final list: core (in fixed order) + extras
+        statuses = CORE_STATUSES + extras
 
         # Validate / prepare export directory
         export_dir = self.export_dir_edit.text().strip()
@@ -249,6 +328,21 @@ class SettingsView(QWidget):
         self.settings.attendance_statuses_json = json.dumps(statuses)
         self.settings.export_base_dir = export_dir or None
         self.settings.attendance_auto_save = self.auto_save_checkbox.isChecked()
+        # Theme
+        self.settings.theme = self.theme_combo.currentText()
+
+        # School days from checkboxes
+        selected_days = [
+            key for key, cb in self.school_days_checkboxes.items() if cb.isChecked()
+        ]
+        if not selected_days:
+            QMessageBox.warning(
+                self,
+                "Settings",
+                "Please select at least one school day.",
+            )
+            return
+        self.settings.school_days_json = json.dumps(selected_days)
 
         self.session.add(self.settings)
         self.session.commit()
@@ -260,6 +354,10 @@ class SettingsView(QWidget):
             # Rebuild the grade_choices list for Add/Edit dialogs
             if hasattr(self.students_view, "refresh_grade_choices"):
                 self.students_view.refresh_grade_choices()
+
+        # Apply theme immediately if callback is provided
+        if self.apply_theme_func is not None:
+            self.apply_theme_func(self.settings.theme)
 
         QMessageBox.information(self, "Settings", "Settings saved.")
 
@@ -315,3 +413,180 @@ class SettingsView(QWidget):
 
         # Step 3: Run the existing promotion logic on StudentsView
         self.students_view.promote_all_students()
+
+    # ------------------------------------------------------------------
+    # Audit log viewer (password-protected)
+    # ------------------------------------------------------------------
+    def on_view_audit_logs_clicked(self):
+        """
+        Prompt for admin password, then open the audit log viewer dialog.
+        """
+        admin = self.session.query(AdminUser).first()
+        if admin is None:
+            QMessageBox.warning(
+                self,
+                "Audit Logs",
+                "No admin user found. Cannot verify password.",
+            )
+            return
+
+        login_dialog = LoginDialog(
+            verify_func=verify_password,
+            stored_hash=admin.password_hash,
+        )
+        result = login_dialog.exec()
+        if result != LoginDialog.Accepted:
+            QMessageBox.information(
+                self,
+                "Audit Logs",
+                "Audit log view cancelled or password was incorrect.",
+            )
+            return
+
+        dlg = AuditLogViewerDialog(self.session, self)
+        dlg.exec()
+
+
+class AuditLogViewerDialog(QDialog):
+    """
+    Read-only viewer for AuditLog entries.
+    Simple filter by entity type + details pane for before/after snapshots.
+    """
+
+    def __init__(self, session, parent=None):
+        super().__init__(parent)
+        self.session = session
+        self._logs = []
+
+        self.setWindowTitle("Audit Logs")
+        self.resize(900, 600)
+
+        main_layout = QVBoxLayout()
+
+        # Filter row
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Entity:"))
+        self.entity_filter = QComboBox()
+        self.entity_filter.addItems(
+            [
+                "All",
+                "Student",
+                "Teacher",
+                "Class",
+                "Enrollment",
+                "TeacherClassLink",
+                "Attendance",
+                "CalendarEvent",
+            ]
+        )
+        filter_layout.addWidget(self.entity_filter)
+        filter_layout.addStretch()
+        main_layout.addLayout(filter_layout)
+
+        # Table of log entries
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(
+            ["Time", "Actor", "Action", "Entity", "Entity ID"]
+        )
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        main_layout.addWidget(self.table)
+
+        # Details pane for selected log
+        main_layout.addWidget(QLabel("Selected entry details (before / after):"))
+        self.details_edit = QPlainTextEdit()
+        self.details_edit.setReadOnly(True)
+        main_layout.addWidget(self.details_edit)
+
+        # Close button
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(close_btn)
+        main_layout.addLayout(btn_layout)
+
+        self.setLayout(main_layout)
+
+        # Signals
+        self.entity_filter.currentTextChanged.connect(self.load_logs)
+        self.table.itemSelectionChanged.connect(self._update_details)
+
+        # Initial load
+        self.load_logs()
+
+    def load_logs(self):
+        """
+        Load recent audit log entries, optionally filtered by entity type.
+        """
+        entity = self.entity_filter.currentText()
+        query = self.session.query(AuditLog).order_by(AuditLog.timestamp.desc())
+        if entity != "All":
+            query = query.filter(AuditLog.entity == entity)
+
+        # Limit to avoid giant tables
+        logs = query.limit(200).all()
+        self._logs = logs
+
+        self.table.setRowCount(len(logs))
+
+        for row, log in enumerate(logs):
+            ts = log.timestamp.isoformat(sep=" ", timespec="seconds") if log.timestamp else ""
+            self.table.setItem(row, 0, QTableWidgetItem(ts))
+            self.table.setItem(row, 1, QTableWidgetItem(log.actor or ""))
+            self.table.setItem(row, 2, QTableWidgetItem(log.action or ""))
+            self.table.setItem(row, 3, QTableWidgetItem(log.entity or ""))
+            self.table.setItem(
+                row,
+                4,
+                QTableWidgetItem("" if log.entity_id is None else str(log.entity_id)),
+            )
+
+        self.table.resizeColumnsToContents()
+        self.details_edit.clear()
+
+    def _update_details(self):
+        """
+        When the selection changes, show the full before/after JSON for
+        the selected log entry.
+        """
+        selected_rows = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
+        if not selected_rows:
+            self.details_edit.clear()
+            return
+
+        row = selected_rows[0].row()
+        if row < 0 or row >= len(self._logs):
+            self.details_edit.clear()
+            return
+
+        log = self._logs[row]
+
+        lines = [
+            f"ID: {log.id}",
+            f"Time: {log.timestamp.isoformat(sep=' ', timespec='seconds') if log.timestamp else ''}",
+            f"Actor: {log.actor}",
+            f"Action: {log.action}",
+            f"Entity: {log.entity}",
+            f"Entity ID: {log.entity_id}",
+            "",
+        ]
+
+        def pretty_json(raw: str | None, label: str) -> None:
+            if raw is None:
+                lines.append(f"{label}: (none)")
+                return
+            try:
+                obj = json.loads(raw)
+                formatted = json.dumps(obj, indent=2, sort_keys=True)
+            except Exception:
+                formatted = raw
+            lines.append(f"{label}:")
+            lines.append(formatted)
+            lines.append("")
+
+        pretty_json(log.before_json, "Before")
+        pretty_json(log.after_json, "After")
+
+        self.details_edit.setPlainText("\n".join(lines))

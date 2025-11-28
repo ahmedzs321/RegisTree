@@ -13,23 +13,34 @@ venv/
 .vscode/
 .idea/
 
-# Build artifacts
+# Build artifacts (PyInstaller, packaging)
 build/
 dist/
 *.spec
 *.manifest
+*.tef
+*.toc
+
+# Logs & temp
 *.log
 *.bak
 
-# Local Stuff, SQLite DB + exports
+# Local SQLite DB + app data
 registree.db
 exports/
+photos/
 dev_notes.txt
 
 # OS junk
 .DS_Store
 Thumbs.db
 
-# Optional: if config is ever file-based
+# Optional config
 config.json
 settings.json
+
+# App icons and compiled resources
+*.icns
+*.ico
+*.qrc
+*.rcc
