@@ -196,7 +196,7 @@ After building:
  - Audit logs stored in audit_logs table
  - Undo / redo stacks do not persist after closing the app
 
-🙌 Credits
+##🙌 Credits
 
 Designed & developed by Ahmed Syed & collaborators. 
 
