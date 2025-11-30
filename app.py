@@ -1,8 +1,7 @@
 # RegisTree main window with security + tabs
 import sys
-import os
 import json
-from pathlib import Path
+import traceback
 from PySide6.QtGui import QIcon
 
 from PySide6.QtWidgets import (
@@ -14,25 +13,62 @@ from PySide6.QtWidgets import (
 )
 
 from data.db import init_db, SessionLocal
-from data.models import AdminUser, Settings
-from data.security import hash_password, verify_password
+from data.models import Settings  # AdminUser no longer needed here
 
 from ui.students_view import StudentsView
 from ui.classes_view import ClassesView
 from ui.attendance_view import AttendanceView
 from ui.exports_view import ExportsView
 from ui.dashboard_view import DashboardView
-from ui.auth_dialogs import SetupAdminDialog, LoginDialog
 from ui.settings_view import SettingsView
 from ui.teachers_view import TeachersView
 from ui.undo_manager import UndoManager
 from ui.calendar_view import CalendarView
+from ui.teacher_tracker_view import TeacherTrackerView
+from ui.startup_dialog import StartupDialog  # <-- startup dialog
+
+# 🔹 NEW: central paths (handles frozen / non-frozen cases)
+from data.paths import ICON_PATH, LOGS_DIR, EXPORTS_DIR
+
+# ----------------------------------------------------------
+# Application version
+# ----------------------------------------------------------
+__version__ = "0.1.0-beta.1"
+
+
+# ----------------------------------------------------------
+# Global unhandled-exception logger for bug reports
+# ----------------------------------------------------------
+def log_unhandled_exception(exctype, value, tb):
+    """
+    Global hook to log unhandled exceptions to logs/last_traceback.txt.
+
+    This is used by the 'Report a Bug' button in Settings so the
+    traceback can be attached to the email body.
+    """
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        log_path = LOGS_DIR / "last_traceback.txt"
+
+        with log_path.open("w", encoding="utf-8") as f:
+            f.write("Unhandled exception in RegisTree:\n\n")
+            traceback.print_exception(exctype, value, tb, file=f)
+
+        # Also print to stderr (useful during development)
+        traceback.print_exception(exctype, value, tb)
+    except Exception:
+        # As a last resort, don't let logging failure crash the app
+        traceback.print_exception(exctype, value, tb)
+
+
+# Install the hook so Python calls this whenever an exception bubbles
+# all the way up and would normally crash the program.
+sys.excepthook = log_unhandled_exception
 
 
 # ----------------------------------------------------------
 # Theme support (Light / Dark)
 # ----------------------------------------------------------
-
 DARK_STYLESHEET = """
 QWidget {
     background-color: #202124;
@@ -86,10 +122,11 @@ def apply_theme(theme: str | None):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, session, settings):
+    def __init__(self, session, settings, version: str):
         super().__init__()
-        self.setWindowIcon(QIcon(str(Path(__file__).parent / "ui" / "assets" / "registree_icon.png")))
-        self.setWindowTitle("RegisTree")
+        # 🔹 Use ICON_PATH from data.paths
+        self.setWindowIcon(QIcon(str(ICON_PATH)))
+        self.setWindowTitle(f"RegisTree {version}")
         self.session = session
         self.settings = settings
         self.tabs = QTabWidget()
@@ -101,6 +138,7 @@ class MainWindow(QMainWindow):
         self.dashboard_view = DashboardView(self.session, self.settings)
         self.students_view = StudentsView(self.session, self.settings, self.undo_manager)
         self.teachers_view = TeachersView(self.session, self.settings, self.undo_manager)
+        self.teacher_tracker_view = TeacherTrackerView(self.session, self.settings)
         self.classes_view = ClassesView(self.session, self.undo_manager)
         self.attendance_view = AttendanceView(self.session, self.settings)
         self.calendar_view = CalendarView(self.session, self.settings, self.attendance_view)
@@ -116,6 +154,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.dashboard_view, "Dashboard")
         self.tabs.addTab(self.students_view, "Students")
         self.tabs.addTab(self.teachers_view, "Teachers")
+        self.tabs.addTab(self.teacher_tracker_view, "Teacher Tracker")
         self.tabs.addTab(self.classes_view, "Classes")
         self.tabs.addTab(self.attendance_view, "Attendance")
         self.tabs.addTab(self.calendar_view, "Calendar")
@@ -156,6 +195,10 @@ class MainWindow(QMainWindow):
             # Auto-load roster silently (no warnings)
             self.attendance_view.load_roster(show_warnings=False)
 
+        if widget is self.teacher_tracker_view:
+            # Auto-load teacher list silently (no warnings)
+            self.teacher_tracker_view.load_teachers_for_date(show_warnings=False)
+
     # ----------------------------------------------------------
     # Undo / Redo handlers
     # ----------------------------------------------------------
@@ -179,9 +222,8 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
 
-    # Set global application icon
-    icon_path = Path(__file__).parent / "ui" / "assets" / "registree_icon.png"
-    app.setWindowIcon(QIcon(str(icon_path)))
+    # 🔹 Global application icon uses ICON_PATH as well
+    app.setWindowIcon(QIcon(str(ICON_PATH)))
 
     # Initialize DB schema (creates tables if needed)
     init_db()
@@ -189,41 +231,13 @@ def main():
     # Create DB session
     session = SessionLocal()
 
-    # ----- SECURITY START -----
-    # Check if an admin user already exists
-    admin = session.query(AdminUser).first()
-
-    if admin is None:
-        # No admin user yet → first-time setup
-        setup_dialog = SetupAdminDialog()
-        result = setup_dialog.exec()
-
-        if result != QDialog.Accepted:
-            # User cancelled setup, exit app
-            sys.exit(0)
-
-        password = setup_dialog.get_password()
-
-        # Create the admin user
-        admin = AdminUser(
-            username="admin",
-            password_hash=hash_password(password)
-        )
-        session.add(admin)
-        session.commit()
-
-    else:
-        # Admin exists → require login
-        login_dialog = LoginDialog(
-            verify_func=verify_password,
-            stored_hash=admin.password_hash
-        )
-        result = login_dialog.exec()
-
-        if result != QDialog.Accepted:
-            # Wrong password or user cancelled
-            sys.exit(0)
-    # ----- SECURITY END -----
+    # ----- STARTUP + SECURITY (combined splash + setup/login) -----
+    startup_dialog = StartupDialog(session, version=__version__)
+    result = startup_dialog.exec()
+    if result != QDialog.Accepted:
+        # User cancelled or closed the startup window
+        sys.exit(0)
+    # ----- END STARTUP + SECURITY -----
 
     # Load or create the global Settings row
     settings = session.query(Settings).first()
@@ -233,7 +247,8 @@ def main():
             school_name="",
             academic_year="",
             attendance_statuses_json=json.dumps(default_statuses),
-            export_base_dir=str(Path("exports").resolve()),
+            # 🔹 Default export dir uses EXPORTS_DIR from data.paths
+            export_base_dir=str(EXPORTS_DIR),
             attendance_auto_save=False,
             starting_grade="K",
             graduating_grade="12th",
@@ -245,7 +260,7 @@ def main():
     apply_theme(getattr(settings, "theme", "Light"))
 
     # Launch main app window
-    win = MainWindow(session, settings)
+    win = MainWindow(session, settings, __version__)
     win.resize(1100, 700)
     win.show()
     sys.exit(app.exec())

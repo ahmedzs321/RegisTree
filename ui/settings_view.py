@@ -17,10 +17,17 @@ from PySide6.QtWidgets import (
     QDialog,
     QTableWidget,
     QTableWidgetItem,
+    QAbstractItemView,
 )
 from data.models import AdminUser, AuditLog
 from data.security import verify_password
 from ui.auth_dialogs import LoginDialog
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices
+import urllib.parse
+
+from data.paths import EXPORTS_DIR, LOGS_DIR, APP_ROOT
+
 
 GRADE_SCALE = [
     "PreK",
@@ -54,7 +61,7 @@ class SettingsView(QWidget):
         self.session = session
         self.settings = settings
         self.students_view = students_view
-        self.apply_theme_func = apply_theme_func  # <--- NEW
+        self.apply_theme_func = apply_theme_func
 
         main_layout = QVBoxLayout()
 
@@ -105,9 +112,17 @@ class SettingsView(QWidget):
         form.addRow("Starting grade:", self.starting_grade_combo)
         form.addRow("Graduating grade:", self.graduating_grade_combo)
 
-        # Attendance auto-save toggle
-        self.auto_save_checkbox = QCheckBox("Enable auto-save for attendance")
+        # Attendance auto-save toggle (students + teachers)
+        self.auto_save_checkbox = QCheckBox(
+            "Enable auto-save for student and teacher attendance"
+        )
         form.addRow("Attendance auto-save:", self.auto_save_checkbox)
+
+        # Teacher check-in/check-out toggle for Teacher Tracker
+        self.teacher_checkin_checkbox = QCheckBox(
+            "Enable check-in/check-out times in Teacher Tracker"
+        )
+        form.addRow("Teacher check-in/out:", self.teacher_checkin_checkbox)
 
         # School days selection
         self.school_days_checkboxes = {}
@@ -173,6 +188,34 @@ class SettingsView(QWidget):
         audit_group.setLayout(audit_layout)
         main_layout.addWidget(audit_group)
 
+        # --- Support & Feedback ---
+        support_group = QGroupBox("Support and Feedback")
+        support_layout = QHBoxLayout()
+
+        self.feedback_button = QPushButton("Send Feedback")
+        self.feedback_button.clicked.connect(self.send_feedback_email)
+        support_layout.addWidget(self.feedback_button)
+
+        self.bug_report_button = QPushButton("Report a Bug")
+        self.bug_report_button.clicked.connect(self.send_bug_report_email)
+        support_layout.addWidget(self.bug_report_button)
+
+        support_layout.addStretch()
+        support_group.setLayout(support_layout)
+        main_layout.addWidget(support_group)
+
+        # --- Folders ---
+        folders_group = QGroupBox("Folders")
+        folders_layout = QHBoxLayout()
+
+        self.open_app_root_button = QPushButton("Open RegisTree Folder")
+        self.open_app_root_button.clicked.connect(self.open_app_root_folder)
+        folders_layout.addWidget(self.open_app_root_button)
+
+        folders_layout.addStretch()
+        folders_group.setLayout(folders_layout)
+        main_layout.addWidget(folders_group)
+
         # Buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
@@ -217,7 +260,8 @@ class SettingsView(QWidget):
         if self.settings.export_base_dir:
             base_dir = self.settings.export_base_dir
         else:
-            base_dir = str(Path("exports").resolve())
+            # Default to central EXPORTS_DIR (DATA_ROOT/exports)
+            base_dir = str(EXPORTS_DIR.resolve())
         self.export_dir_edit.setText(base_dir)
 
         # Grade range from settings
@@ -236,8 +280,12 @@ class SettingsView(QWidget):
         self.starting_grade_combo.setCurrentIndex(start_index)
         self.graduating_grade_combo.setCurrentIndex(grad_index)
 
-        # Auto-save flag
+        # Auto-save flag (students + teachers)
         self.auto_save_checkbox.setChecked(bool(self.settings.attendance_auto_save))
+
+        # Teacher check-in/out flag
+        teacher_checkin = getattr(self.settings, "teacher_check_in_out_enabled", False)
+        self.teacher_checkin_checkbox.setChecked(bool(teacher_checkin))
 
         # Theme
         theme = getattr(self.settings, "theme", None) or "Light"
@@ -327,7 +375,10 @@ class SettingsView(QWidget):
         self.settings.academic_year = self.academic_year_edit.text().strip() or None
         self.settings.attendance_statuses_json = json.dumps(statuses)
         self.settings.export_base_dir = export_dir or None
+        # Auto-save now applies to both student + teacher attendance
         self.settings.attendance_auto_save = self.auto_save_checkbox.isChecked()
+        # Teacher check-in/out toggle
+        self.settings.teacher_check_in_out_enabled = self.teacher_checkin_checkbox.isChecked()
         # Theme
         self.settings.theme = self.theme_combo.currentText()
 
@@ -446,6 +497,97 @@ class SettingsView(QWidget):
         dlg = AuditLogViewerDialog(self.session, self)
         dlg.exec()
 
+    # ------------------------------------------------------------------
+    # Set-up email
+    # ------------------------------------------------------------------
+    def _open_email(self, subject: str, body: str):
+        """
+        Open the user's default email client with a pre-filled mailto link.
+        """
+        to_addr = "registree.novofia@gmail.com"
+        subject_enc = urllib.parse.quote(subject)
+        body_enc = urllib.parse.quote(body)
+
+        mailto_url = QUrl(f"mailto:{to_addr}?subject={subject_enc}&body={body_enc}")
+        QDesktopServices.openUrl(mailto_url)
+
+    # ------------------------------------------------------------------
+    # Feedback email
+    # ------------------------------------------------------------------
+    def send_feedback_email(self):
+        """
+        Open a feedback email with some basic context (school name, academic year).
+        """
+        body = (
+            "Please write your feedback below this line.\n\n"
+            "------------------------------\n"
+            f"School name: {self.settings.school_name or ''}\n"
+            f"Academic year: {self.settings.academic_year or ''}\n"
+        )
+        self._open_email("RegisTree Feedback", body)
+
+    # ------------------------------------------------------------------
+    # Bug-report email
+    # ------------------------------------------------------------------
+    def send_bug_report_email(self):
+        """
+        Open a bug-report email. If logs/last_traceback.txt exists,
+        include its contents (truncated) in the message body.
+        """
+        # Use central LOGS_DIR from data.paths
+        logs_dir = LOGS_DIR
+        log_path = logs_dir / "last_traceback.txt"
+
+        traceback_text = ""
+        if log_path.exists():
+            try:
+                text = log_path.read_text(encoding="utf-8")
+                # mailto URLs have length limits; keep this from exploding
+                max_chars = 4000
+                if len(text) > max_chars:
+                    text = text[-max_chars:]
+                    text = "(traceback truncated)\n" + text
+                traceback_text = text
+            except Exception:
+                traceback_text = "(Could not read last_traceback.txt)\n"
+
+        lines = [
+            "Describe the bug here (what you expected vs what happened):",
+            "",
+            "Steps to reproduce:",
+            "1. ",
+            "2. ",
+            "3. ",
+            "",
+            "------------------------------",
+            f"School name: {self.settings.school_name or ''}",
+            f"Academic year: {self.settings.academic_year or ''}",
+            "",
+        ]
+
+        if traceback_text:
+            lines.append("Last recorded traceback:")
+            lines.append("")
+            lines.append(traceback_text)
+        else:
+            lines.append("No traceback file was found.")
+            lines.append("If you saw an error popup, describe it above.")
+
+        body = "\n".join(lines)
+        self._open_email("RegisTree Bug Report", body)
+
+    # ------------------------------------------------------------------
+    # Open root folder
+    # ------------------------------------------------------------------
+    def open_app_root_folder(self):
+        """
+        Open the RegisTree root folder (where app.py / RegisTree.exe lives).
+        Uses APP_ROOT from data.paths, which is dev- and exe-aware.
+        """
+        target = APP_ROOT
+        # QDesktopServices + QUrl works cross-platform
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target.resolve())))
+
 
 class AuditLogViewerDialog(QDialog):
     """
@@ -476,6 +618,7 @@ class AuditLogViewerDialog(QDialog):
                 "Enrollment",
                 "TeacherClassLink",
                 "Attendance",
+                "TeacherAttendance",
                 "CalendarEvent",
             ]
         )
@@ -489,6 +632,8 @@ class AuditLogViewerDialog(QDialog):
         self.table.setHorizontalHeaderLabels(
             ["Time", "Actor", "Action", "Entity", "Entity ID"]
         )
+        # Make cells read-only; use dialogs / widgets for edits
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         main_layout.addWidget(self.table)

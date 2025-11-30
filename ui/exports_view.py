@@ -5,6 +5,7 @@ import json
 import shutil
 import os
 import sys
+import subprocess
 
 from PySide6.QtWidgets import (
     QWidget,
@@ -31,13 +32,14 @@ from data.models import (
     Teacher,
     TeacherClassLink,
     CalendarEvent,
+    TeacherAttendance,
 )
 from data.security import hash_password, verify_password
 from ui.auth_dialogs import ChangePasswordDialog
+from data.paths import DB_PATH, EXPORTS_DIR, PHOTOS_DIR
 
-
-DB_FILE = Path("registree.db")
-PHOTOS_DIR = Path("photos")
+# For backward compatibility with older references in this file
+DB_FILE = DB_PATH
 
 
 class ExportsView(QWidget):
@@ -46,7 +48,8 @@ class ExportsView(QWidget):
     - Roster exports (students/teachers/classes/enrollments, JSON).
     - Printable student/teacher summary PDFs.
     - Attendance exports (single-day CSV + daily bundle).
-    - Attendance reports (student/class histories, monthly summary, absence list).
+    - Attendance reports (student/class histories, monthly summary, absence list,
+      teacher attendance log).
     - Database backup/restore + full RegisTree backup + change admin password.
     """
 
@@ -91,7 +94,7 @@ class ExportsView(QWidget):
         self.export_enrollments_button.clicked.connect(self.export_enrollments_csv)
         roster_layout.addWidget(self.export_enrollments_button)
 
-        #Calendar Events CSV
+        # Calendar Events CSV
         self.export_calendar_events_button = QPushButton("Export Calendar Events CSV")
         self.export_calendar_events_button.clicked.connect(
             self.export_calendar_events_csv
@@ -193,6 +196,25 @@ class ExportsView(QWidget):
         class_row.addStretch()
         reports_layout.addLayout(class_row)
 
+        # Teacher attendance reports (per teacher, range-based)
+        teacher_row = QHBoxLayout()
+        teacher_row.addWidget(QLabel("Teacher Attendance:"))
+
+        self.teacher_att_range_csv_button = QPushButton("CSV…")
+        self.teacher_att_range_csv_button.clicked.connect(
+            self.export_teacher_attendance_range_csv
+        )
+        teacher_row.addWidget(self.teacher_att_range_csv_button)
+
+        self.teacher_att_range_pdf_button = QPushButton("PDF…")
+        self.teacher_att_range_pdf_button.clicked.connect(
+            self.export_teacher_attendance_range_pdf
+        )
+        teacher_row.addWidget(self.teacher_att_range_pdf_button)
+
+        teacher_row.addStretch()
+        reports_layout.addLayout(teacher_row)
+
         # Monthly summary (for month of "From" date)
         month_row = QHBoxLayout()
         month_row.addWidget(QLabel("Monthly Summary (PDF):"))
@@ -210,6 +232,17 @@ class ExportsView(QWidget):
         absence_row.addWidget(self.absence_list_button)
         absence_row.addStretch()
         reports_layout.addLayout(absence_row)
+
+        # Teacher attendance log (all teachers, all dates)
+        teacher_att_row = QHBoxLayout()
+        teacher_att_row.addWidget(QLabel("Teacher Attendance Log (CSV):"))
+        self.teacher_att_log_button = QPushButton("Export CSV")
+        self.teacher_att_log_button.clicked.connect(
+            self.export_teacher_attendance_log_csv
+        )
+        teacher_att_row.addWidget(self.teacher_att_log_button)
+        teacher_att_row.addStretch()
+        reports_layout.addLayout(teacher_att_row)
 
         reports_group.setLayout(reports_layout)
         main_layout.addWidget(reports_group)
@@ -236,6 +269,11 @@ class ExportsView(QWidget):
         self.change_pw_button.clicked.connect(self.change_admin_password)
         db_layout.addWidget(self.change_pw_button)
 
+        # NEW: Open Exports Folder button
+        self.open_exports_button = QPushButton("Open Exports Folder")
+        self.open_exports_button.clicked.connect(self.open_exports_folder)
+        db_layout.addWidget(self.open_exports_button)
+
         db_layout.addStretch()
         db_group.setLayout(db_layout)
         main_layout.addWidget(db_group)
@@ -246,13 +284,19 @@ class ExportsView(QWidget):
     # Helpers for paths
     # ------------------------------------------------------------------
     def _get_exports_dir(self) -> Path:
-        """Base exports folder, possibly overridden by Settings.export_base_dir."""
+        """
+        Base exports folder.
+
+        Priority:
+        1) settings.export_base_dir (if set)
+        2) EXPORTS_DIR from data.paths (DATA_ROOT/exports)
+        """
         if self.settings is not None and getattr(
             self.settings, "export_base_dir", None
         ):
             base = Path(self.settings.export_base_dir)
         else:
-            base = Path("exports")
+            base = EXPORTS_DIR
 
         base.mkdir(parents=True, exist_ok=True)
         return base
@@ -260,7 +304,7 @@ class ExportsView(QWidget):
     def _subdir(self, *parts: str) -> Path:
         """
         Create (if needed) and return a subdirectory inside the base exports dir.
-        Example: _subdir("rosters", "students") -> exports/rosters/students/
+        Example: _subdir("rosters", "students") -> <exports>/rosters/students/
         """
         d = self._get_exports_dir()
         for p in parts:
@@ -606,7 +650,7 @@ class ExportsView(QWidget):
     def export_calendar_events_csv(self):
         """
         Export all calendar events to a CSV file in:
-        exports/calendar/events/calendar_events.csv
+        <exports>/calendar/events/calendar_events.csv
         (or under the user-configured export base directory).
         """
         out_dir = self._subdir("calendar", "events")
@@ -649,12 +693,11 @@ class ExportsView(QWidget):
             f"Exported {len(events)} calendar events to:\n{file_path}",
         )
 
-
     # ------------------------------------------------------------------
-    # ATTENDANCE: CSV (single date)
+    # ATTENDANCE: CSV (single date, students)
     # ------------------------------------------------------------------
     def _export_attendance_csv_to(self, out_dir: Path, att_date: date) -> int:
-        """Helper: write attendance_DATE.csv into out_dir, return count."""
+        """Helper: write student attendance_DATE.csv into out_dir, return count."""
         file_path = out_dir / f"attendance_{att_date.isoformat()}.csv"
 
         records = (
@@ -703,6 +746,62 @@ class ExportsView(QWidget):
 
         return len(records)
 
+    # ------------------------------------------------------------------
+    # TEACHER ATTENDANCE: CSV (single date, helper for bundle)
+    # ------------------------------------------------------------------
+    def _export_teacher_attendance_csv_to(self, out_dir: Path, att_date: date) -> int:
+        """
+        Helper: write teacher_attendance_DATE.csv into out_dir, return count.
+        """
+        file_path = out_dir / f"teacher_attendance_{att_date.isoformat()}.csv"
+
+        records = (
+            self.session.query(TeacherAttendance, Teacher)
+            .join(Teacher, TeacherAttendance.teacher_id == Teacher.id)
+            .filter(TeacherAttendance.date == att_date)
+            .order_by(Teacher.last_name, Teacher.first_name, TeacherAttendance.id)
+            .all()
+        )
+
+        with file_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "id",
+                    "teacher_id",
+                    "teacher_first_name",
+                    "teacher_last_name",
+                    "date",
+                    "status",
+                    "check_in_time",
+                    "check_out_time",
+                    "marked_by",
+                    "timestamp",
+                ]
+            )
+
+            for ta, t in records:
+                writer.writerow(
+                    [
+                        ta.id,
+                        t.id,
+                        t.first_name or "",
+                        t.last_name or "",
+                        ta.date.isoformat() if ta.date else "",
+                        ta.status or "",
+                        ta.check_in_time.isoformat()
+                        if ta.check_in_time
+                        else "",
+                        ta.check_out_time.isoformat()
+                        if ta.check_out_time
+                        else "",
+                        ta.marked_by or "",
+                        ta.timestamp.isoformat() if ta.timestamp else "",
+                    ]
+                )
+
+        return len(records)
+
     def export_attendance_csv(self):
         out_dir = self._subdir("attendance", "daily")
 
@@ -728,24 +827,45 @@ class ExportsView(QWidget):
         # Basic stats
         total_students = self.session.query(Student).count()
         total_classes = self.session.query(Class).count()
+        total_teachers = self.session.query(Teacher).count()
 
-        records = (
+        # Student attendance records
+        stu_records = (
             self.session.query(Attendance)
             .filter(Attendance.date == att_date)
             .all()
         )
-        total_attendance_records = len(records)
+        total_attendance_records = len(stu_records)
 
-        # Count by status, **unique per (student, date, status)**
-        status_counts: dict[str, int] = {}
-        seen_keys = set()
-        for a in records:
+        # Teacher attendance records
+        teach_records = (
+            self.session.query(TeacherAttendance)
+            .filter(TeacherAttendance.date == att_date)
+            .all()
+        )
+        total_teacher_att_records = len(teach_records)
+
+        # Count student attendance by status, **unique per (student, date, status)**
+        student_status_counts: dict[str, int] = {}
+        seen_student_keys = set()
+        for a in stu_records:
             status_label = (a.status or "").strip() or "(blank)"
             key = (a.student_id, a.date, status_label)
-            if key in seen_keys:
+            if key in seen_student_keys:
                 continue
-            seen_keys.add(key)
-            status_counts[status_label] = status_counts.get(status_label, 0) + 1
+            seen_student_keys.add(key)
+            student_status_counts[status_label] = student_status_counts.get(status_label, 0) + 1
+
+        # Count teacher attendance by status, **unique per (teacher, date, status)**
+        teacher_status_counts: dict[str, int] = {}
+        seen_teacher_keys = set()
+        for ta in teach_records:
+            status_label = (ta.status or "").strip() or "(blank)"
+            key = (ta.teacher_id, ta.date, status_label)
+            if key in seen_teacher_keys:
+                continue
+            seen_teacher_keys.add(key)
+            teacher_status_counts[status_label] = teacher_status_counts.get(status_label, 0) + 1
 
         # Create PDF
         c = canvas.Canvas(str(file_path), pagesize=letter)
@@ -762,31 +882,56 @@ class ExportsView(QWidget):
         y -= 20
         c.drawString(72, y, f"Total Classes: {total_classes}")
         y -= 20
+        c.drawString(72, y, f"Total Teachers: {total_teachers}")
+        y -= 20
         c.drawString(
             72,
             y,
-            f"Attendance Records (raw rows): {total_attendance_records}",
+            f"Student Attendance Records (raw rows): {total_attendance_records}",
+        )
+        y -= 20
+        c.drawString(
+            72,
+            y,
+            f"Teacher Attendance Records (raw rows): {total_teacher_att_records}",
         )
         y -= 30
 
+        # Student status summary
         c.setFont("Helvetica-Bold", 12)
-        c.drawString(72, y, "Unique Attendance by Status:")
+        c.drawString(72, y, "Unique Student Attendance by Status:")
         y -= 20
 
         c.setFont("Helvetica", 12)
-        if status_counts:
-            for status, count in status_counts.items():
+        if student_status_counts:
+            for status, count in student_status_counts.items():
                 c.drawString(90, y, f"{status}: {count}")
                 y -= 18
         else:
-            c.drawString(90, y, "No attendance records for this date.")
+            c.drawString(90, y, "No student attendance records for this date.")
+            y -= 18
+
+        y -= 20
+
+        # Teacher status summary
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(72, y, "Unique Teacher Attendance by Status:")
+        y -= 20
+
+        c.setFont("Helvetica", 12)
+        if teacher_status_counts:
+            for status, count in teacher_status_counts.items():
+                c.drawString(90, y, f"{status}: {count}")
+                y -= 18
+        else:
+            c.drawString(90, y, "No teacher attendance records for this date.")
             y -= 18
 
         c.showPage()
         c.save()
 
     # ------------------------------------------------------------------
-    # Generate daily bundle (students.json + attendance CSV + PDF)
+    # Generate daily bundle (students.json + attendance CSVs + PDF)
     # ------------------------------------------------------------------
     def generate_daily_bundle(self):
         qd = self.date_edit.date()
@@ -797,10 +942,13 @@ class ExportsView(QWidget):
         # 1) Students JSON snapshot
         students_count = self._export_students_json_to(out_dir)
 
-        # 2) Attendance CSV for that date
+        # 2) Student Attendance CSV for that date
         attendance_count = self._export_attendance_csv_to(out_dir, att_date)
 
-        # 3) PDF summary
+        # 3) Teacher Attendance CSV for that date
+        teacher_attendance_count = self._export_teacher_attendance_csv_to(out_dir, att_date)
+
+        # 4) PDF summary (students + teachers)
         self._export_summary_pdf(out_dir, att_date)
 
         QMessageBox.information(
@@ -809,7 +957,8 @@ class ExportsView(QWidget):
             (
                 f"Generated daily bundle for {att_date} in:\n{out_dir}\n\n"
                 f"Students in JSON: {students_count}\n"
-                f"Attendance records (rows): {attendance_count}\n"
+                f"Student attendance records (rows): {attendance_count}\n"
+                f"Teacher attendance records (rows): {teacher_attendance_count}\n"
                 f"PDF summary: summary_{att_date.isoformat()}.pdf"
             ),
         )
@@ -1393,11 +1542,196 @@ class ExportsView(QWidget):
             f"Class attendance PDF created:\n{file_path}",
         )
 
+    def export_teacher_attendance_range_csv(self):
+        """
+        Range-based teacher attendance export (one teacher at a time),
+        similar to the student/class attendance exports.
+        """
+        start, end = self._get_range()
+        if start is None:
+            return
+
+        teacher_id, ok = QInputDialog.getInt(
+            self, "Teacher Attendance", "Enter Teacher ID:", 1, 1
+        )
+        if not ok:
+            return
+
+        teacher = self.session.get(Teacher, teacher_id)
+        if teacher is None:
+            QMessageBox.warning(
+                self,
+                "Teacher Attendance",
+                f"Teacher ID {teacher_id} not found.",
+            )
+            return
+
+        out_dir = self._subdir("reports", "attendance", "teachers")
+        file_path = out_dir / f"teacher_{teacher_id}_attendance_{start}_{end}.csv"
+
+        records = (
+            self.session.query(TeacherAttendance)
+            .filter(
+                TeacherAttendance.teacher_id == teacher_id,
+                TeacherAttendance.date >= start,
+                TeacherAttendance.date <= end,
+            )
+            .order_by(TeacherAttendance.date, TeacherAttendance.id)
+            .all()
+        )
+
+        with file_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "teacher_id",
+                    "teacher_first_name",
+                    "teacher_last_name",
+                    "date",
+                    "status",
+                    "check_in_time",
+                    "check_out_time",
+                    "marked_by",
+                    "timestamp",
+                ]
+            )
+
+            for ta in records:
+                writer.writerow(
+                    [
+                        teacher.id,
+                        teacher.first_name or "",
+                        teacher.last_name or "",
+                        ta.date.isoformat() if ta.date else "",
+                        ta.status or "",
+                        ta.check_in_time.isoformat() if ta.check_in_time else "",
+                        ta.check_out_time.isoformat() if ta.check_out_time else "",
+                        ta.marked_by or "",
+                        ta.timestamp.isoformat() if ta.timestamp else "",
+                    ]
+                )
+
+        QMessageBox.information(
+            self,
+            "Teacher Attendance",
+            f"Exported {len(records)} records to:\n{file_path}",
+        )
+
+    def export_teacher_attendance_range_pdf(self):
+        """
+        Range-based teacher attendance export (one teacher at a time) to PDF,
+        similar to the student/class attendance PDFs.
+        """
+        start, end = self._get_range()
+        if start is None:
+            return
+
+        teacher_id, ok = QInputDialog.getInt(
+            self, "Teacher Attendance PDF", "Enter Teacher ID:", 1, 1
+        )
+        if not ok:
+            return
+
+        teacher = self.session.get(Teacher, teacher_id)
+        if teacher is None:
+            QMessageBox.warning(
+                self,
+                "Teacher Attendance PDF",
+                f"Teacher ID {teacher_id} not found.",
+            )
+            return
+
+        out_dir = self._subdir("reports", "attendance", "teachers")
+        file_path = out_dir / f"teacher_{teacher_id}_attendance_{start}_{end}.pdf"
+
+        records = (
+            self.session.query(TeacherAttendance)
+            .filter(
+                TeacherAttendance.teacher_id == teacher_id,
+                TeacherAttendance.date >= start,
+                TeacherAttendance.date <= end,
+            )
+            .order_by(TeacherAttendance.date, TeacherAttendance.id)
+            .all()
+        )
+
+        c = canvas.Canvas(str(file_path), pagesize=letter)
+        width, height = letter
+        y = height - 72
+
+        # Header
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(
+            72,
+            y,
+            f"Teacher Attendance - {teacher.first_name or ''} {teacher.last_name or ''}",
+        )
+        y -= 24
+        c.setFont("Helvetica", 11)
+        c.drawString(72, y, f"ID: {teacher.id}")
+        y -= 14
+        c.drawString(72, y, f"Range: {start} to {end}")
+        y -= 24
+
+        # Column headers
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(72, y, "Date")
+        c.drawString(170, y, "Status")
+        c.drawString(280, y, "Check-In")
+        c.drawString(370, y, "Check-Out")
+        y -= 16
+        c.setFont("Helvetica", 10)
+
+        if records:
+            for ta in records:
+                # New page if we’re near bottom
+                if y < 72:
+                    c.showPage()
+                    y = height - 72
+                    c.setFont("Helvetica-Bold", 11)
+                    c.drawString(72, y, "Date")
+                    c.drawString(170, y, "Status")
+                    c.drawString(280, y, "Check-In")
+                    c.drawString(370, y, "Check-Out")
+                    y -= 16
+                    c.setFont("Helvetica", 10)
+
+                date_str = ta.date.isoformat() if ta.date else ""
+                status_str = ta.status or ""
+                check_in_str = (
+                    ta.check_in_time.strftime("%H:%M")
+                    if ta.check_in_time
+                    else ""
+                )
+                check_out_str = (
+                    ta.check_out_time.strftime("%H:%M")
+                    if ta.check_out_time
+                    else ""
+                )
+
+                c.drawString(72, y, date_str)
+                c.drawString(170, y, status_str)
+                c.drawString(280, y, check_in_str)
+                c.drawString(370, y, check_out_str)
+                y -= 14
+        else:
+            c.drawString(72, y, "No teacher attendance records in this range.")
+            y -= 14
+
+        c.showPage()
+        c.save()
+
+        QMessageBox.information(
+            self,
+            "Teacher Attendance PDF",
+            f"Teacher attendance PDF created:\n{file_path}",
+        )
+
     def export_monthly_summary_pdf(self):
         """
         Monthly summary for the month containing the 'From' date.
         Aggregates attendance counts by status (unique per student/date/status)
-        and by class.
+        and by class, and also shows teacher attendance status totals.
         """
         qs = self.range_start_edit.date()
         month_start = date(qs.year(), qs.month(), 1)
@@ -1410,6 +1744,7 @@ class ExportsView(QWidget):
         out_dir = self._subdir("reports", "attendance", "monthly")
         file_path = out_dir / f"monthly_summary_{month_start.year}_{month_start.month:02d}.pdf"
 
+        # Student attendance records (with class)
         records = (
             self.session.query(Attendance, Class)
             .join(Class, Attendance.class_id == Class.id)
@@ -1420,7 +1755,17 @@ class ExportsView(QWidget):
             .all()
         )
 
-        # Aggregate
+        # Teacher attendance records
+        teacher_records = (
+            self.session.query(TeacherAttendance)
+            .filter(
+                TeacherAttendance.date >= month_start,
+                TeacherAttendance.date <= month_end,
+            )
+            .all()
+        )
+
+        # Aggregate student attendance
         status_counts: dict[str, int] = {}
         class_counts: dict[str, int] = {}
         seen_status_keys = set()  # (student_id, date, status_label)
@@ -1435,6 +1780,17 @@ class ExportsView(QWidget):
             if cl is not None:
                 cname = f"{cl.name or ''} ({cl.term or ''})"
                 class_counts[cname] = class_counts.get(cname, 0) + 1
+
+        # Aggregate teacher attendance
+        teacher_status_counts: dict[str, int] = {}
+        seen_teacher_keys = set()  # (teacher_id, date, status_label)
+
+        for ta in teacher_records:
+            status_label = (ta.status or "").strip() or "(blank)"
+            skey = (ta.teacher_id, ta.date, status_label)
+            if skey not in seen_teacher_keys:
+                seen_teacher_keys.add(skey)
+                teacher_status_counts[status_label] = teacher_status_counts.get(status_label, 0) + 1
 
         c = canvas.Canvas(str(file_path), pagesize=letter)
         width, height = letter
@@ -1452,8 +1808,9 @@ class ExportsView(QWidget):
         c.drawString(72, y, f"Date range: {month_start} to {month_end}")
         y -= 24
 
+        # Student status totals
         c.setFont("Helvetica-Bold", 12)
-        c.drawString(72, y, "Unique totals by Status")
+        c.drawString(72, y, "Student Attendance: Unique totals by Status")
         y -= 18
         c.setFont("Helvetica", 11)
         if status_counts:
@@ -1465,12 +1822,12 @@ class ExportsView(QWidget):
                     y = height - 72
                     c.setFont("Helvetica", 11)
         else:
-            c.drawString(90, y, "No attendance records for this month.")
+            c.drawString(90, y, "No student attendance records for this month.")
             y -= 16
 
         y -= 16
         c.setFont("Helvetica-Bold", 12)
-        c.drawString(72, y, "Total rows by Class")
+        c.drawString(72, y, "Student Attendance: Total rows by Class")
         y -= 18
         c.setFont("Helvetica", 11)
         if class_counts:
@@ -1483,6 +1840,24 @@ class ExportsView(QWidget):
                     c.setFont("Helvetica", 11)
         else:
             c.drawString(90, y, "No class attendance records for this month.")
+            y -= 16
+
+        # Teacher status totals
+        y -= 20
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(72, y, "Teacher Attendance: Unique totals by Status")
+        y -= 18
+        c.setFont("Helvetica", 11)
+        if teacher_status_counts:
+            for status, count in teacher_status_counts.items():
+                c.drawString(90, y, f"{status}: {count}")
+                y -= 16
+                if y < 72:
+                    c.showPage()
+                    y = height - 72
+                    c.setFont("Helvetica", 11)
+        else:
+            c.drawString(90, y, "No teacher attendance records for this month.")
             y -= 16
 
         c.showPage()
@@ -1560,12 +1935,102 @@ class ExportsView(QWidget):
         )
 
     # ------------------------------------------------------------------
+    # Teacher attendance log (all teachers, all dates)
+    # ------------------------------------------------------------------
+    def export_teacher_attendance_log_csv(self):
+        """
+        Export a CSV of all teacher attendance records (all teachers, all dates).
+        """
+        out_dir = self._subdir("reports", "attendance", "teachers")
+        file_path = out_dir / "teacher_attendance_log.csv"
+
+        records = (
+            self.session.query(TeacherAttendance, Teacher)
+            .join(Teacher, TeacherAttendance.teacher_id == Teacher.id)
+            .order_by(TeacherAttendance.date, Teacher.last_name, Teacher.first_name, TeacherAttendance.id)
+            .all()
+        )
+
+        with file_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "id",
+                    "teacher_id",
+                    "teacher_first_name",
+                    "teacher_last_name",
+                    "date",
+                    "status",
+                    "check_in_time",
+                    "check_out_time",
+                    "marked_by",
+                    "timestamp",
+                ]
+            )
+
+            for ta, t in records:
+                writer.writerow(
+                    [
+                        ta.id,
+                        t.id,
+                        t.first_name or "",
+                        t.last_name or "",
+                        ta.date.isoformat() if ta.date else "",
+                        ta.status or "",
+                        ta.check_in_time.isoformat()
+                        if ta.check_in_time
+                        else "",
+                        ta.check_out_time.isoformat()
+                        if ta.check_out_time
+                        else "",
+                        ta.marked_by or "",
+                        ta.timestamp.isoformat() if ta.timestamp else "",
+                    ]
+                )
+
+        QMessageBox.information(
+            self,
+            "Teacher Attendance Log",
+            f"Exported {len(records)} teacher attendance records to:\n{file_path}",
+        )
+
+    # ------------------------------------------------------------------
+    # Open exports folder
+    # ------------------------------------------------------------------
+    def open_exports_folder(self):
+        """
+        Open the base exports folder in the system file explorer.
+
+        Respects settings.export_base_dir if set, otherwise uses EXPORTS_DIR
+        from data.paths (via _get_exports_dir()).
+        """
+        base = self._get_exports_dir()  # ensures it exists
+
+        try:
+            if sys.platform.startswith("win"):
+                # Windows
+                os.startfile(base)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                # macOS
+                subprocess.Popen(["open", str(base)])
+            else:
+                # Linux / other
+                subprocess.Popen(["xdg-open", str(base)])
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Open Exports Folder",
+                f"Could not open the exports folder:\n{base}\n\n{e}",
+            )
+
+
+    # ------------------------------------------------------------------
     # Backup database file
     # ------------------------------------------------------------------
     def backup_database(self):
         """
         Automatically create a .db backup in:
-        exports/backups/db/registree_backup_YYYY-MM-DD_HHMMSS.db
+        <exports>/backups/db/registree_backup_YYYY-MM-DD_HHMMSS.db
         No file dialog.
         """
         if not DB_FILE.exists():
@@ -1576,7 +2041,7 @@ class ExportsView(QWidget):
             )
             return
 
-        # Directory: exports/backups/db
+        # Directory: <exports>/backups/db
         backups_dir = self._subdir("backups", "db")
 
         # Timestamped filename
@@ -1604,7 +2069,7 @@ class ExportsView(QWidget):
     # ------------------------------------------------------------------
     def full_registree_backup(self):
         """
-        Create a timestamped folder under exports/backups/full that contains:
+        Create a timestamped folder under <exports>/backups/full that contains:
         - a copy of registree.db
         - a copy of the photos/ directory (if it exists)
         """

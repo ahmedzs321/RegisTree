@@ -15,6 +15,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QGroupBox,
     QFileDialog,
+    QDateEdit,
+    QSizePolicy,
+    QAbstractItemView,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
@@ -24,8 +27,9 @@ from sqlalchemy import or_
 from pathlib import Path
 import shutil
 
-from data.models import Teacher, TeacherClassLink, Class, add_audit_log
+from data.models import Teacher, TeacherClassLink, Class, TeacherAttendance, add_audit_log
 from ui.undo_manager import UndoManager
+from data.paths import TEACHER_PHOTOS_DIR
 
 
 def teacher_to_dict(teacher: Teacher | None):
@@ -105,6 +109,9 @@ class TeachersView(QWidget):
                 "Notes",
             ]
         )
+        # Make cells read-only; use dialogs / widgets for edits
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+
         layout.addWidget(self.table)
 
         self.setLayout(layout)
@@ -470,9 +477,10 @@ class AddTeacherDialog(QDialog):
 class TeacherProfileDialog(QDialog):
     """
     Profile view for a Teacher:
-    - Name, contact info, status, notes
-    - List of classes they are linked to (via TeacherClassLink)
-    - 'Edit Teacher…' button to modify info
+    LEFT PANE:
+        - Photo, name, contact info, status, notes, classes
+    RIGHT PANE:
+        - Teacher attendance / check-in history (read-only table)
     """
 
     def __init__(
@@ -497,9 +505,20 @@ class TeacherProfileDialog(QDialog):
         # Build UI once, then we can update labels after edits
         self._build_ui()
         self._populate_classes()
+        self._populate_attendance_history()
 
     def _build_ui(self):
         t = self.teacher
+
+        # ------------------------------------------------------------------
+        # Two-pane content area: left (profile) and right (attendance history)
+        # ------------------------------------------------------------------
+        content_layout = QHBoxLayout()
+
+        # =======================
+        # LEFT COLUMN (Profile)
+        # =======================
+        left_col = QVBoxLayout()
 
         # --- Top area: photo + name/contact side by side ---
         top_layout = QHBoxLayout()
@@ -527,7 +546,7 @@ class TeacherProfileDialog(QDialog):
         name_contact_layout.addStretch()
         top_layout.addLayout(name_contact_layout)
 
-        self.main_layout.addLayout(top_layout)
+        left_col.addLayout(top_layout)
 
         # Notes
         notes_group = QGroupBox("Notes")
@@ -536,15 +555,50 @@ class TeacherProfileDialog(QDialog):
         self.notes_view.setReadOnly(True)
         notes_layout.addWidget(self.notes_view)
         notes_group.setLayout(notes_layout)
-        self.main_layout.addWidget(notes_group)
+        left_col.addWidget(notes_group)
 
         # Class history / list
         self.classes_group = QGroupBox("Classes")
         self.classes_layout = QVBoxLayout()
         self.classes_group.setLayout(self.classes_layout)
-        self.main_layout.addWidget(self.classes_group)
+        left_col.addWidget(self.classes_group)
 
+        left_col.addStretch()
+
+        # ============================
+        # RIGHT COLUMN (Attendance)
+        # ============================
+        right_col = QVBoxLayout()
+
+        self.attendance_group = QGroupBox("Teacher Tracker")
+        att_layout = QVBoxLayout()
+
+        self.attendance_table = QTableWidget()
+        self.attendance_table.setColumnCount(5)
+        self.attendance_table.setHorizontalHeaderLabels(
+            ["Date", "Status", "Check-In", "Check-Out", "Marked By"]
+        )
+        self.attendance_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.attendance_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.attendance_table.setSelectionMode(QTableWidget.SingleSelection)
+
+        att_layout.addWidget(self.attendance_table)
+        self.attendance_group.setLayout(att_layout)
+
+        # Make the attendance pane use available vertical space
+        self.attendance_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        right_col.addWidget(self.attendance_group)
+
+        # Put both columns into the content layout
+        content_layout.addLayout(left_col, 3)   # wider profile column
+        content_layout.addLayout(right_col, 4)  # slightly wider history column
+
+        self.main_layout.addLayout(content_layout)
+
+        # ------------------------------------------------------------------
         # Bottom buttons: Change Photo + Edit + Close
+        # ------------------------------------------------------------------
         button_box = QDialogButtonBox()
         self.change_photo_button = QPushButton("Change Photo…")
         button_box.addButton(self.change_photo_button, QDialogButtonBox.ActionRole)
@@ -641,8 +695,8 @@ class TeacherProfileDialog(QDialog):
             )
             return
 
-        # Destination folder for teacher photos
-        photos_dir = Path("photos") / "teachers"
+        # Destination folder for teacher photos (from paths.py)
+        photos_dir = TEACHER_PHOTOS_DIR
         try:
             photos_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
@@ -715,6 +769,69 @@ class TeacherProfileDialog(QDialog):
                 self.classes_layout.addWidget(QLabel(text))
         else:
             self.classes_layout.addWidget(QLabel("No classes assigned."))
+
+    def _populate_attendance_history(self):
+        """
+        Fill the right-pane table with this teacher's per-day attendance
+        (TeacherAttendance), ordered by date descending.
+        """
+        records = (
+            self.session.query(TeacherAttendance)
+            .filter(TeacherAttendance.teacher_id == self.teacher.id)
+            .order_by(TeacherAttendance.date.desc())
+            .all()
+        )
+
+        self.attendance_table.setRowCount(0)
+
+        # --- NEW: detect if any record has check-in or check-out times ---
+        has_any_times = any(
+            (rec.check_in_time is not None) or (rec.check_out_time is not None)
+            for rec in records
+        )
+
+        if not records:
+            # No rows at all → also hide the time columns for a clean look
+            self.attendance_table.setColumnHidden(2, True)  # Check-In
+            self.attendance_table.setColumnHidden(3, True)  # Check-Out
+            return
+
+        self.attendance_table.setRowCount(len(records))
+
+        for row, rec in enumerate(records):
+            # Date
+            date_str = rec.date.isoformat() if rec.date else ""
+            item_date = QTableWidgetItem(date_str)
+            self.attendance_table.setItem(row, 0, item_date)
+
+            # Status
+            item_status = QTableWidgetItem(rec.status or "")
+            self.attendance_table.setItem(row, 1, item_status)
+
+            # Check-in / Check-out (only show time portion if present)
+            if rec.check_in_time is not None:
+                check_in_str = rec.check_in_time.isoformat(sep=" ", timespec="minutes")
+            else:
+                check_in_str = ""
+            if rec.check_out_time is not None:
+                check_out_str = rec.check_out_time.isoformat(sep=" ", timespec="minutes")
+            else:
+                check_out_str = ""
+
+            item_in = QTableWidgetItem(check_in_str)
+            item_out = QTableWidgetItem(check_out_str)
+            self.attendance_table.setItem(row, 2, item_in)
+            self.attendance_table.setItem(row, 3, item_out)
+
+            # Marked by
+            item_marked = QTableWidgetItem(rec.marked_by or "")
+            self.attendance_table.setItem(row, 4, item_marked)
+
+        self.attendance_table.resizeColumnsToContents()
+
+        # --- NEW: hide/show the time columns based on whether any times exist ---
+        self.attendance_table.setColumnHidden(2, not has_any_times)  # Check-In
+        self.attendance_table.setColumnHidden(3, not has_any_times)  # Check-Out
 
     def edit_teacher(self):
         """
@@ -806,6 +923,8 @@ class TeacherProfileDialog(QDialog):
         self.teacher = teacher
         self._refresh_header_and_notes()
         self._load_photo()
+        # Attendance history is derived from TeacherAttendance; no change
+        # is made here, so we don't need to repopulate that table.
 
         # Register undo/redo
         if self.undo_manager is not None:

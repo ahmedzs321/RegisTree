@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QMessageBox,
     QAbstractSpinBox,
+    QAbstractItemView,
 )
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QBrush, QColor
@@ -45,13 +46,6 @@ class AttendanceView(QWidget):
         self.session = session
         self.settings = settings
         
-        # Auto-save flag from Settings
-        self.auto_save_enabled = False
-        if self.settings is not None:
-            self.auto_save_enabled = bool(
-                getattr(self.settings, "attendance_auto_save", False)
-            )
-
         # Determine which statuses to use
         self.status_options = list(self.DEFAULT_STATUS_OPTIONS)
         if self.settings is not None and getattr(
@@ -126,6 +120,9 @@ class AttendanceView(QWidget):
         self.table.setHorizontalHeaderLabels(
             ["Student ID", "First Name", "Last Name", "Status"]
         )
+        # Make cells read-only; use dialogs / widgets for edits
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+
         # We will place QComboBox widgets in the Status column.
         main_layout.addWidget(self.table)
 
@@ -133,6 +130,20 @@ class AttendanceView(QWidget):
 
         # Load class list into combo box
         self.load_classes()
+
+    # ------------------------------------------------------------------
+    # Auto-save property (live view of Settings)
+    # ------------------------------------------------------------------
+    @property
+    def auto_save_enabled(self) -> bool:
+        """
+        Always reflect the current settings.attendance_auto_save value,
+        so toggling it in Settings takes effect immediately.
+        """
+        if self.settings is None:
+            return False
+        return bool(getattr(self.settings, "attendance_auto_save", False))
+
 
     # ------------------------------------------------------------------
     # Helpers for coloring / dirty tracking
@@ -455,8 +466,6 @@ class AttendanceView(QWidget):
         }
 
         self.table.setRowCount(len(students))
-
-        from PySide6.QtWidgets import QComboBox  # ensure imported
 
         for row, s in enumerate(students):
             self.table.setItem(row, 0, QTableWidgetItem(str(s.id)))

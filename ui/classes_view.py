@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QDateEdit,
     QFileDialog,
     QInputDialog,
+    QAbstractItemView,
 )
 from PySide6.QtCore import QDate
 from datetime import date
@@ -31,6 +32,9 @@ from sqlalchemy import or_
 from ui.undo_manager import UndoManager
 
 import csv
+
+# Central exports directory
+from data.paths import EXPORTS_DIR
 
 
 # ----------------------------------------------------------------------
@@ -133,6 +137,9 @@ class ClassesView(QWidget):
                 "Today’s Attendance",
             ]
         )
+        # Make cells read-only; use dialogs / widgets for edits
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        
         layout.addWidget(self.table)
 
         self.setLayout(layout)
@@ -628,10 +635,14 @@ class ClassesView(QWidget):
 
         # Choose file path
         default_name = f"class_{class_id}_roster.csv"
+
+        # Ensure exports directory exists (works in dev & frozen EXE)
+        EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
         file_path_str, _ = QFileDialog.getSaveFileName(
             self,
             "Export Class Roster",
-            default_name,
+            str(EXPORTS_DIR / default_name),   # 🔹 start in EXPORTS_DIR
             "CSV Files (*.csv);;All Files (*.*)",
         )
         if not file_path_str:
@@ -1046,6 +1057,8 @@ class ManageEnrollmentsDialog(QDialog):
         self.table.setHorizontalHeaderLabels(
             ["Student ID", "First Name", "Last Name", "Start Date", "End Date"]
         )
+        # Make cells read-only; use dialogs / widgets for edits
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         main_layout.addWidget(QLabel("Enrolled students:"))
         main_layout.addWidget(self.table)
@@ -1534,6 +1547,8 @@ class ManageClassTeachersDialog(QDialog):
         self.table.setHorizontalHeaderLabels(
             ["Teacher ID", "First Name", "Last Name", "Email", "Phone"]
         )
+        # Make cells read-only; use dialogs / widgets for edits
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         main_layout.addWidget(QLabel("Assigned teachers:"))
         main_layout.addWidget(self.table)

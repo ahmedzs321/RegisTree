@@ -9,38 +9,29 @@ venv/
 .env/
 .venv/
 
-# IDEs
+# IDEs / Editors
 .vscode/
 .idea/
 
-# Build artifacts (PyInstaller, packaging)
+# Build artifacts (PyInstaller, etc.)
 build/
 dist/
 *.spec
-*.manifest
-*.tef
-*.toc
 
-# Logs & temp
-*.log
-*.bak
-
-# Local SQLite DB + app data
+# Local runtime data for RegisTree
 registree.db
 exports/
 photos/
-dev_notes.txt
+logs/
 
 # OS junk
 .DS_Store
 Thumbs.db
 
-# Optional config
+# Optional: if config is ever file-based
 config.json
 settings.json
 
-# App icons and compiled resources
-*.icns
-*.ico
-*.qrc
-*.rcc
+# Other junk
+dev_notes.txt
+*.docx

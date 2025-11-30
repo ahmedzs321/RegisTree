@@ -28,7 +28,7 @@ class Student(Base):
     dob = Column(Date, nullable=False)
     grade_level = Column(String(16), nullable=False)
     contact_email = Column(String(120), nullable=True)
-        
+
     # Guardian and contact info (can be empty, so nullable=True)
     guardian_name = Column(String(120), nullable=True)
     guardian_phone = Column(String(40), nullable=True)
@@ -36,11 +36,11 @@ class Student(Base):
 
     # Emergency contact
     emergency_contact_name = Column(String(120), nullable=True)
-    emergency_contact_phone = Column(String(40), nullable=True)    
+    emergency_contact_phone = Column(String(40), nullable=True)
 
     status = Column(String(16), nullable=False, default="Active")
 
-    # Path to profile photo on disk (optional)
+    # Path to profile photo on disk
     photo_path = Column(String(255), nullable=True)
 
     # Free-form notes about the student (optional)
@@ -80,7 +80,7 @@ class Class(Base):
 
     # Room number (or online code)
     room = Column(String(40), nullable=True)
-    
+
     # List of Enrollment objects for this class (one per student)
     enrollments = relationship(
         "Enrollment",
@@ -199,8 +199,10 @@ class Settings(Base):
 
     # Base folder for exports (can be overridden by manual file dialogs)
     export_base_dir = Column(String(255), nullable=True)
+
+    # If true, auto-saves both student + teacher attendance as changes are made
     attendance_auto_save = Column(Boolean, nullable=False, default=False)
-    
+
     # Grade range for promotion logic (subset of a PreK–12 scale)
     starting_grade = Column(String(20), nullable=True)   # e.g. "K", "1st"
     graduating_grade = Column(String(20), nullable=True) # e.g. "5th", "12th"
@@ -210,6 +212,11 @@ class Settings(Base):
 
     # Theme (Light / Dark)
     theme = Column(String(16), nullable=False, default="Light")
+
+    # --- Teacher-tracker related options ---
+
+    # If true, the Teacher Tracker tab allows check-in/check-out times
+    teacher_check_in_out_enabled = Column(Boolean, nullable=False, default=False)
 
     def __repr__(self) -> str:
         return f"<Settings id={self.id} school_name={self.school_name!r}>"
@@ -228,11 +235,11 @@ class Teacher(Base):
     phone = Column(String(40), nullable=True)
     email = Column(String(120), nullable=True)
 
-    #Emergency contact
+    # Emergency contact
     emergency_contact_name = Column(String(120), nullable=True)
     emergency_contact_phone = Column(String(40), nullable=True)
 
-    # Optional extras
+    # Extras
     status = Column(String(16), nullable=False, default="Active")  # Active / Inactive
     notes = Column(Text, nullable=True)
     photo_path = Column(String(255), nullable=True)
@@ -240,6 +247,13 @@ class Teacher(Base):
     # Link rows connecting this teacher to classes they teach
     class_links = relationship(
         "TeacherClassLink",
+        back_populates="teacher",
+        cascade="all, delete-orphan",
+    )
+
+    # Teacher attendance records (per-day, not class-based)
+    teacher_attendance = relationship(
+        "TeacherAttendance",
         back_populates="teacher",
         cascade="all, delete-orphan",
     )
@@ -301,6 +315,53 @@ class CalendarEvent(Base):
         )
 
 
+class TeacherAttendance(Base):
+    """
+    Per-day attendance for teachers (not tied to classes).
+
+    - One row per (teacher, date) enforced via UniqueConstraint.
+    - Status values will mirror the configurable attendance statuses
+      (e.g. "Present", "Absent", "No School", etc.).
+    - Optional check-in/check-out timestamps are enabled via Settings.
+    """
+    __tablename__ = "teacher_attendance"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    teacher_id = Column(Integer, ForeignKey("teachers.id"), nullable=False)
+
+    # Date this attendance record applies to (school day)
+    date = Column(Date, nullable=False)
+
+    # e.g. "Present", "Absent", "No School"
+    status = Column(String(32), nullable=False, default="")
+
+    # Optional check-in / check-out times (UTC)
+    check_in_time = Column(DateTime, nullable=True)
+    check_out_time = Column(DateTime, nullable=True)
+
+    # Who marked it (for now, simple text; later could link to AdminUser)
+    marked_by = Column(String(120), nullable=True)
+
+    # When this record was last updated/created
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # Relationship back to Teacher
+    teacher = relationship("Teacher", back_populates="teacher_attendance")
+
+    __table_args__ = (
+        UniqueConstraint("teacher_id", "date", name="uq_teacher_date"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<TeacherAttendance id={self.id} "
+            f"teacher_id={self.teacher_id} "
+            f"date={self.date} "
+            f"status={self.status}>"
+        )
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
@@ -312,7 +373,8 @@ class AuditLog(Base):
     # What happened: "create", "update", "delete", etc.
     action = Column(String(50), nullable=False)
 
-    # Which table/entity: "Student", "Teacher", "Class", "Attendance", "CalendarEvent"
+    # Which table/entity: "Student", "Teacher", "Class", "Attendance",
+    # "CalendarEvent", "TeacherAttendance", etc.
     entity = Column(String(50), nullable=False)
 
     # Primary key of the record in that entity (can be null for generic actions)
@@ -347,7 +409,8 @@ def add_audit_log(
     - session: SQLAlchemy session
     - actor:   "Admin", "System", etc.
     - action:  "create", "update", "delete", ...
-    - entity:  model name like "Student", "Teacher", "Class", "Attendance", "CalendarEvent"
+    - entity:  model name like "Student", "Teacher", "Class",
+               "Attendance", "TeacherAttendance", "CalendarEvent"
     - entity_id: primary key of the affected row (or None)
     - before: dict snapshot of old values (or None)
     - after:  dict snapshot of new values (or None)

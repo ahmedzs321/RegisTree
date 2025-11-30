@@ -22,13 +22,15 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QFileDialog,
     QSizePolicy,
+    QAbstractItemView,
 )
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QPixmap
 from sqlalchemy import or_
 
 from data.models import Student, Class, Enrollment, Attendance, add_audit_log
-from ui.undo_manager import UndoManager   # <-- NEW
+from ui.undo_manager import UndoManager
+from data.paths import STUDENT_PHOTOS_DIR 
 
 
 def student_to_dict(student: Student | None):
@@ -112,6 +114,8 @@ class StudentsView(QWidget):
                 "Status",
             ]
         )
+        # Make cells read-only; use dialogs / widgets for edits
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         layout.addWidget(self.table)
 
         self.setLayout(layout)
@@ -1390,7 +1394,8 @@ class StudentProfileDialog(QDialog):
             )
             return
 
-        photos_dir = Path("photos") / "students"
+        # Use central STUDENT_PHOTOS_DIR from data.paths
+        photos_dir = STUDENT_PHOTOS_DIR
         try:
             photos_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
