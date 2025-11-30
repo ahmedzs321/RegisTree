@@ -143,6 +143,7 @@ python app.py
 - Afterwards, the login dialog appears each launch.
 
 ## 📂 Project Structure
+```bash
 RegisTree/
 │
 ├── app.py
@@ -172,6 +173,7 @@ RegisTree/
 ├── requirements.txt
 ├── README.md
 └── .gitignore
+```
 
 ## 📦 Packaging Into an EXE (PyInstaller)
 RegisTree includes a path-safe system (data/paths.py) that ensures that database + exports + logs + photos all stay beside the EXE when frozen.
