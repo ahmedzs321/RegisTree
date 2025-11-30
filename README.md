@@ -112,7 +112,7 @@ Password-protected viewer included.
 
 ### 1️⃣ Clone the Repository
 ```bash
-git clone https://github.com/YOURUSERNAME/RegisTree.git
+git clone https://github.com/ahmedzs321/RegisTree.git
 cd RegisTree
 ```
 
@@ -197,5 +197,7 @@ After building:
  - Undo / redo stacks do not persist after closing the app
 
 🙌 Credits
-Designed & developed by Ahmed Syed
+
+Designed & developed by Ahmed Syed & collaborators. 
+
 A modern offline school management system built with Python & Qt.
